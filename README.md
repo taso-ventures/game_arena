@@ -30,13 +30,11 @@ git clone https://github.com/google-deepmind/game_arena.git
 python3 -m pip install --editable game_arena
 ```
 
-<!---
 #### From PyPI:
 
 ```bash
 python3 -m pip install game_arena
 ```
--->
 
 ### 3. Run a Demo Chess Game
 
