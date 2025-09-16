@@ -638,12 +638,12 @@ async def _post_request_async(
     timeout: datetime.timedelta,
 ) -> PostRequestResult:
     """Posts a request asynchronously and returns the result."""
-    print(f"Starting POST for '{name}' to {url}")
+    logging.info("Starting POST for request: '%s'", name)
     try:
         async with session.post(
             url, json=payload, headers=headers, timeout=timeout.total_seconds()
         ) as response:
-            print(f"Finished POST for '{name}' with status: {response.status}")
+            logging.info("Finished POST for request: '%s' with status: %s", name, response.status)
             # Raise an exception for bad status codes (4xx or 5xx)
             response.raise_for_status()
 
@@ -653,10 +653,10 @@ async def _post_request_async(
             )
 
     except asyncio.CancelledError:
-        print(f"POST for '{name}' was cancelled.")
+        logging.warning("POST for request: '%s' was cancelled.", name)
         raise
     except Exception as e:
-        print(f"POST for '{name}' failed: {type(e).__name__}")
+        logging.error("POST for request: '%s' failed with error: %s", name, type(e).__name__)
         # Re-raise the exception so the main loop knows it failed
         raise
 
