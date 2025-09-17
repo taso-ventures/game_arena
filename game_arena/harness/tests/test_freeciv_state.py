@@ -21,7 +21,7 @@ class TestFreeCivState(unittest.TestCase):
         fixture_path = (
             Path(__file__).resolve().parent.parent
             / "fixtures"
-            / "freeciv_game_states.json"
+            / "freeciv_sample_game_states.json"
         )
         with fixture_path.open(encoding="utf-8") as fixture_file:
             cls.scenarios = json.load(fixture_file)["states"]
