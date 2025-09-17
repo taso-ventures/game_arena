@@ -52,6 +52,26 @@ def _sanitize_url_for_logging(url: str) -> str:
     sanitized = re.sub(r'/[A-Za-z0-9_-]{20,}/', '/***/', sanitized)
 
     return sanitized
+
+
+def _sanitize_request_for_logging(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Sanitize request object by removing sensitive information for safe logging.
+
+    Args:
+        request: The request object to sanitize
+
+    Returns:
+        Sanitized request with sensitive data redacted
+    """
+    sanitized = dict(request)
+    # Remove or redact sensitive headers if present
+    if 'headers' in sanitized:
+        headers = dict(sanitized['headers'])
+        for header_name in headers:
+            if header_name.lower() in ['authorization', 'x-api-key', 'api-key']:
+                headers[header_name] = '***'
+        sanitized['headers'] = headers
+    return sanitized
 DEEPSEEK_THOUGHT_TAG_END = "</think>"
 
 
@@ -281,7 +301,7 @@ class TogetherAIModel(model_generation.MultimodalModel):
         return tournament_util.GenerateReturn(
             main_response=main_response,
             main_response_and_thoughts=main_response_and_thoughts,
-            request_for_logging=request,
+            request_for_logging=_sanitize_request_for_logging(request),
             response_for_logging=completion,
             generation_tokens=generation_tokens,
             prompt_tokens=prompt_tokens,
@@ -415,7 +435,7 @@ class XAIModel(model_generation.MultimodalModel):
         return tournament_util.GenerateReturn(
             main_response=full_content,
             main_response_and_thoughts=main_response_and_thoughts,
-            request_for_logging=request,
+            request_for_logging=_sanitize_request_for_logging(request),
             response_for_logging=completion,
             generation_tokens=total_generation_tokens,
             prompt_tokens=total_prompt_tokens,
@@ -588,7 +608,7 @@ class XAIModel(model_generation.MultimodalModel):
         return tournament_util.GenerateReturn(
             main_response=full_content,
             main_response_and_thoughts=main_response_and_thoughts,
-            request_for_logging=request,
+            request_for_logging=_sanitize_request_for_logging(request),
             response_for_logging={"filtered_chunks_list": response_for_logging},
             generation_tokens=total_generation_tokens,
             prompt_tokens=total_prompt_tokens,
