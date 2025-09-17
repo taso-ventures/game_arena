@@ -15,21 +15,19 @@
 """LLM-based parsers."""
 
 import dataclasses
+import re
 
 from absl import logging
-from game_arena.harness import model_generation
-from game_arena.harness import parsers
-from game_arena.harness import tournament_util
 
-import re
+from game_arena.harness import model_generation, parsers, tournament_util
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class InstructionConfig:
-  name: str
-  instruction: str
-  final_answer_prefix: str
-  no_action_answer: str
+    name: str
+    instruction: str
+    final_answer_prefix: str
+    no_action_answer: str
 
 
 # Game-agnostic version. Excess formatting examples may be too specific or may
@@ -145,53 +143,87 @@ OpenSpielChessInstructionConfig_V0 = InstructionConfig(
     no_action_answer="LLMEXTRACT_NO_PROPOSED_MOVE",
 )
 
+FreeCivInstructionConfig_V0 = InstructionConfig(
+    name="FreeCivInstructionConfig_V0",
+    instruction="""## Instructions for Extracting Final Proposed FreeCiv Action
 
-def _parse_extractor_response(
-    *, response: str, final_answer_prefix: str
-) -> str:
-  """Parses the response from the extractor LLM."""
-  # Regex captures all text following prefix on the same line:
-  final_answer_match = re.search(
-      rf"{final_answer_prefix}\s*(.*)",
-      response,
-  )
-  final_answer = final_answer_match.group(1) if final_answer_match else ""
-  if final_answer:
-    # Removes leading and trailing whitespace!
-    final_answer = final_answer.splitlines()[0].strip()
-  return final_answer
+**Objective:** Given a response containing context and the final proposed FreeCiv action, extract the final proposed FreeCiv action without excess formatting.
+
+**Process:**
+
+1. **Analyze the response:** From the response, identify the context preceding the final proposed FreeCiv action and the final proposed FreeCiv action itself.
+   If no final proposed FreeCiv action is present, skip the steps below and then present "Clean Action: LLMEXTRACT_NO_PROPOSED_ACTION" on a new line (no additional markings or explanations are needed).
+
+2. **Extract the final proposed FreeCiv action:** Extract the final proposed FreeCiv action. FreeCiv actions have the following format:
+   - Action type (e.g., unit_move, city_production, unit_attack, etc.)
+   - Actor identifier (unit ID or city ID)
+   - Target information (coordinates, target ID, or parameters)
+
+   Examples of valid FreeCiv actions:
+   - unit_move_settlers(101)_to(2,3)
+   - city_production_athens(301)_target(warriors)
+   - unit_attack_warrior(102)_target(203)
+   - unit_fortify_legions(105)
+   - city_build_improvement_rome(302)_target(granary)
+
+3. **Remove excess formatting:** From the extracted final proposed FreeCiv action, remove excess formatting while preserving the action structure:
+   - Remove LaTeX formatting, HTML tags, surrounding brackets
+   - Remove excess newlines, leading whitespace, trailing whitespace
+   - Remove terminating periods that are not part of the action
+   - Keep underscores, parentheses, and numbers that are part of the action format
+
+4. **Present the clean final proposed FreeCiv action:** Present the clean final proposed FreeCiv action on a new line, preceded by "Clean Action: ".
+
+**Note:** No additional markings or explanations are needed beyond "Clean Action: " and the clean final proposed FreeCiv action.""",
+    final_answer_prefix="Clean Action: ",
+    no_action_answer="LLMEXTRACT_NO_PROPOSED_ACTION",
+)
+
+
+def _parse_extractor_response(*, response: str, final_answer_prefix: str) -> str:
+    """Parses the response from the extractor LLM."""
+    # Regex captures all text following prefix on the same line:
+    final_answer_match = re.search(
+        rf"{final_answer_prefix}\s*(.*)",
+        response,
+    )
+    final_answer = final_answer_match.group(1) if final_answer_match else ""
+    if final_answer:
+        # Removes leading and trailing whitespace!
+        final_answer = final_answer.splitlines()[0].strip()
+    return final_answer
 
 
 class LLMParser(parsers.TextParser):
-  """Parses move from a LLM response with another (separate) LLM."""
+    """Parses move from a LLM response with another (separate) LLM."""
 
-  def __init__(
-      self, model: model_generation.Model, instruction_config: InstructionConfig
-  ):
-    self._model = model
-    self._instruction_config = instruction_config
+    def __init__(
+        self, model: model_generation.Model, instruction_config: InstructionConfig
+    ):
+        self._model = model
+        self._instruction_config = instruction_config
 
-  def parse(self, parser_input: parsers.TextParserInput) -> str | None:
-    if not parser_input.text:
-      logging.warning("Empty input text for LLMParser.")
-      return None
-    extractor_response = self._model.generate_with_text_input(
-        model_input=tournament_util.ModelTextInput(
-            prompt_text=parser_input.text,
-            system_instruction=self._instruction_config.instruction,
+    def parse(self, parser_input: parsers.TextParserInput) -> str | None:
+        if not parser_input.text:
+            logging.warning("Empty input text for LLMParser.")
+            return None
+        extractor_response = self._model.generate_with_text_input(
+            model_input=tournament_util.ModelTextInput(
+                prompt_text=parser_input.text,
+                system_instruction=self._instruction_config.instruction,
+            )
         )
-    )
-    logging.info(
-        "Extractor input last line: %s", parser_input.text.splitlines()[-1]
-    )
-    logging.info(
-        "Extractor response pre-parse: %s", extractor_response.main_response
-    )
-    parsed_extractor_response = _parse_extractor_response(
-        response=extractor_response.main_response,
-        final_answer_prefix=self._instruction_config.final_answer_prefix,
-    )
-    logging.info("Extractor response post-parse: %s", parsed_extractor_response)
-    if parsed_extractor_response == self._instruction_config.no_action_answer:
-      return None
-    return parsed_extractor_response
+        logging.info(
+            "Extractor input last line: %s", parser_input.text.splitlines()[-1]
+        )
+        logging.info(
+            "Extractor response pre-parse: %s", extractor_response.main_response
+        )
+        parsed_extractor_response = _parse_extractor_response(
+            response=extractor_response.main_response,
+            final_answer_prefix=self._instruction_config.final_answer_prefix,
+        )
+        logging.info("Extractor response post-parse: %s", parsed_extractor_response)
+        if parsed_extractor_response == self._instruction_config.no_action_answer:
+            return None
+        return parsed_extractor_response
