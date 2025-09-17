@@ -1,0 +1,37 @@
+services:
+  game-arena:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: game-arena
+    volumes:
+      # Mount local code for development
+      - .:/app
+      # Cache pip packages
+      - pip-cache:/root/.cache/pip
+    environment:
+      # LLM API Keys (load from .env file)
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # FreeCiv3D Server Connection
+      - FREECIV_SERVER_URL=${FREECIV_SERVER_URL:-http://host.docker.internal:8080}
+      - FREECIV_WS_URL=${FREECIV_WS_URL:-ws://host.docker.internal:4002}
+      # Game Configuration
+      - GAME_TYPE=${GAME_TYPE:-chess}
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    network_mode: host
+    ports:
+      # Expose ports for debugging/monitoring
+      - "9000:9000"
+    command: ["tail", "-f", "/dev/null"]  # Keep container running for development
+    healthcheck:
+      test: ["CMD", "python", "-c", "import game_arena.harness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pip-cache:

@@ -4,7 +4,15 @@ import time
 import unittest
 from pathlib import Path
 
-from game_arena.harness.freeciv_state import FreeCivAction, FreeCivState
+from pydantic import ValidationError
+
+from game_arena.harness.freeciv_state import (
+    MAX_STATE_SIZE_BYTES,
+    FreeCivAction,
+    FreeCivState,
+    _FallbackGameState,
+    _validate_state_size,
+)
 
 
 class TestFreeCivState(unittest.TestCase):
@@ -13,7 +21,7 @@ class TestFreeCivState(unittest.TestCase):
         fixture_path = (
             Path(__file__).resolve().parent.parent
             / "fixtures"
-            / "sample_game_states.json"
+            / "freeciv_game_states.json"
         )
         with fixture_path.open(encoding="utf-8") as fixture_file:
             cls.scenarios = json.load(fixture_file)["states"]
@@ -351,6 +359,107 @@ class TestFreeCivState(unittest.TestCase):
         )
         state.apply_action(celebrate_action)
         self.assertTrue(state.cities[city_id].celebrating)
+
+    def test_unit_invalid_action_type_raises(self):
+        """Unit actions with unsupported types raise helpful errors."""
+        raw_state = copy.deepcopy(self.scenarios["early_game"])
+        state = FreeCivState(raw_state)
+
+        invalid_action = FreeCivAction(
+            action_type="unsupported_action",
+            actor_id=101,
+            target=None,
+            parameters={},
+            source="unit",
+        )
+        with self.assertRaises(ValueError) as context:
+            state.apply_action(invalid_action)
+        self.assertIn("Unsupported unit action", str(context.exception))
+
+    def test_city_invalid_action_type_raises(self):
+        """City actions with unsupported types raise helpful errors."""
+        raw_state = copy.deepcopy(self.scenarios["early_game"])
+        state = FreeCivState(raw_state)
+
+        invalid_action = FreeCivAction(
+            action_type="unsupported_city_action",
+            actor_id=301,
+            target=None,
+            parameters={},
+            source="city",
+        )
+        with self.assertRaises(ValueError) as context:
+            state.apply_action(invalid_action)
+        self.assertIn("Unsupported city action", str(context.exception))
+
+    def test_unit_transport_and_unload_actions(self):
+        """Transport units correctly manage cargo relationships."""
+        raw_state = copy.deepcopy(self.scenarios["early_game"])
+        state = FreeCivState(raw_state)
+
+        transport_unit = state.units[101]
+        cargo_unit = state.units[102]
+
+        load_action = FreeCivAction(
+            action_type="unit_transport",
+            actor_id=transport_unit.unit_id,
+            target={"id": cargo_unit.unit_id},
+            parameters={},
+            source="unit",
+        )
+        state.apply_action(load_action)
+        self.assertIn(
+            cargo_unit.unit_id, state.units[transport_unit.unit_id].cargo_ids
+        )
+        self.assertEqual(
+            state.units[cargo_unit.unit_id].transport_id, transport_unit.unit_id
+        )
+
+        unload_action = FreeCivAction(
+            action_type="unit_unload",
+            actor_id=transport_unit.unit_id,
+            target={"id": cargo_unit.unit_id},
+            parameters={},
+            source="unit",
+        )
+        state.apply_action(unload_action)
+        self.assertNotIn(
+            cargo_unit.unit_id, state.units[transport_unit.unit_id].cargo_ids
+        )
+        self.assertIsNone(state.units[cargo_unit.unit_id].transport_id)
+
+    def test_fallback_game_state_methods_raise(self):
+        """Fallback game state methods signal incomplete implementation."""
+        fallback_state = _FallbackGameState()
+        with self.assertRaises(NotImplementedError):
+            fallback_state.current_player()
+        with self.assertRaises(NotImplementedError):
+            fallback_state.legal_actions()
+        with self.assertRaises(NotImplementedError):
+            fallback_state.is_terminal()
+        with self.assertRaises(NotImplementedError):
+            fallback_state.returns()
+
+    def test_validate_state_size_guard(self):
+        """Large inputs trip the state size protection before parsing."""
+        large_payload = "x" * 6000
+        oversized_state = {"tiles": [{"payload": f"{large_payload}_{i}"} for i in range(2000)]}
+        self.assertGreater(
+            len(oversized_state["tiles"]) * len(large_payload), MAX_STATE_SIZE_BYTES
+        )
+        with self.assertRaises(ValueError) as context:
+            _validate_state_size(oversized_state)
+        self.assertIn("exceeds maximum allowed size", str(context.exception))
+
+    def test_invalid_diplomatic_relations_rejected(self):
+        """Invalid diplomatic relation statuses fail validation."""
+        raw_state = copy.deepcopy(self.scenarios["early_game"])
+        raw_state["players"][0]["diplomatic_relations"] = [
+            {"player_id": 2, "status": "rival"}
+        ]
+        with self.assertRaises((ValueError, ValidationError)) as context:
+            FreeCivState(raw_state)
+        self.assertIn("Invalid diplomatic status", str(context.exception))
 
     def test_performance_benchmarks(self):
         """Test performance requirements."""

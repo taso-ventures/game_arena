@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass, field, replace
+from collections import OrderedDict
+from dataclasses import replace
 from typing import (Any, Dict, Iterable, List, Mapping, Optional, Sequence,
                     Tuple)
+
+from pydantic import BaseModel, Field, validator, model_validator
 
 try:  # pragma: no cover - optional dependency
     import pyspiel  # type: ignore
@@ -13,7 +16,13 @@ except ImportError:  # pragma: no cover - fallback for tests without OpenSpiel
 
 
 class _FallbackGameState:
-    """Minimal fallback for pyspiel.State when OpenSpiel is unavailable."""
+    """Minimal fallback for pyspiel.State when OpenSpiel is unavailable.
+
+    TODO: Explore disconnecting from pyspiel.State dependency.
+    Consider creating a standalone GameState interface that doesn't require
+    OpenSpiel compatibility. This would simplify the architecture and remove
+    the need for this fallback mechanism.
+    """
 
     def current_player(self) -> int:  # pragma: no cover - interface placeholder
         raise NotImplementedError
@@ -32,6 +41,14 @@ class _FallbackGameState:
 
 _GameStateBase = pyspiel.State if pyspiel is not None else _FallbackGameState  # type: ignore
 
+if pyspiel is not None:
+    try:
+        _PY_SPIEL_DUMMY_GAME = pyspiel.load_game('tic_tac_toe')
+    except Exception:  # pragma: no cover - defensive fallback when OpenSpiel is misconfigured
+        _PY_SPIEL_DUMMY_GAME = None
+else:
+    _PY_SPIEL_DUMMY_GAME = None
+
 # Security and validation constants
 MAX_STATE_SIZE_BYTES = 10_000_000  # 10MB limit for state data
 MAX_PLAYER_ID = 1000
@@ -41,18 +58,121 @@ MAX_TURN = 10_000
 THREAT_DISTANCE_TILES = 3
 LOW_HP_THRESHOLD = 50
 MAX_JSON_DEPTH = 10
+MAX_CACHE_SIZE = 100  # Maximum entries in LRU caches
+
+# LLM observation constants
+DEFAULT_MAX_TOKENS = 4000
+MAX_PRIORITY_UNITS = 5
+MAX_VISIBLE_ENEMY_UNITS = 10
+MAX_ACTION_TYPES_DETAIL = 20
+MAX_VISIBLE_RESOURCES = 5
+MIN_TOKENS_FOR_ACTION_DETAILS = 1000
+
+# Cache size constants for different cache types
+ACTION_CACHE_SIZE = 50
+OBSERVATION_CACHE_SIZE = 20
+VISIBILITY_CACHE_SIZE = 30
+THREAT_ANALYSIS_CACHE_SIZE = 25
+
+# Detail level thresholds for observations
+DETAIL_LEVEL_TOKENS = {
+    'basic': 500,
+    'medium': 1500,
+    'full': 3000,
+}
+
+
+class LRUCache:
+    """Simple LRU cache implementation with size limit."""
+
+    def __init__(self, max_size: int = MAX_CACHE_SIZE):
+        self.max_size = max_size
+        self.cache: OrderedDict = OrderedDict()
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        """Get value from cache, moving to end for LRU."""
+        if key in self.cache:
+            # Move to end (most recently used)
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        return default
+
+    def set(self, key: Any, value: Any) -> None:
+        """Set value in cache, evicting oldest if necessary."""
+        if key in self.cache:
+            # Update existing key
+            self.cache.move_to_end(key)
+        elif len(self.cache) >= self.max_size:
+            # Remove oldest item
+            self.cache.popitem(last=False)
+        self.cache[key] = value
+
+    def clear(self) -> None:
+        """Clear all cache entries."""
+        self.cache.clear()
+
+    def __contains__(self, key: Any) -> bool:
+        return key in self.cache
+
+    def __len__(self) -> int:
+        return len(self.cache)
+
+
+def _calculate_deep_size(obj: Any, seen: Optional[set] = None) -> int:
+    """Calculate the deep memory size of a nested object.
+
+    Args:
+        obj: Object to measure
+        seen: Set of already seen objects to avoid infinite recursion
+
+    Returns:
+        Estimated deep size in bytes
+    """
+    if seen is None:
+        seen = set()
+
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+
+    seen.add(obj_id)
+    size = sys.getsizeof(obj)
+
+    if isinstance(obj, dict):
+        size += sum(_calculate_deep_size(k, seen) + _calculate_deep_size(v, seen)
+                   for k, v in obj.items())
+    elif isinstance(obj, (list, tuple, set)):
+        size += sum(_calculate_deep_size(item, seen) for item in obj)
+
+    return size
+
+
+def _validate_state_size(raw_state: Mapping[str, Any]) -> None:
+    """Validate the size of raw state data to prevent DoS attacks.
+
+    Args:
+        raw_state: The raw state data to validate
+
+    Raises:
+        ValueError: If state data exceeds size limits
+    """
+    state_size = _calculate_deep_size(raw_state)
+    if state_size > MAX_STATE_SIZE_BYTES:
+        raise ValueError(
+            f"State data exceeds maximum allowed size: {state_size} > {MAX_STATE_SIZE_BYTES}"
+        )
 
 
 def _safe_int_conversion(
-    value: Any, max_value: int, field_name: str, allow_negative: bool = False
+    value: Any, max_value: int, field_name: str, allow_negative: bool = True
 ) -> int:
-    """Safely convert value to integer with bounds checking.
+    """Safely convert value to int with bounds checking.
 
     Args:
-        value: The value to convert to integer
+        value: Value to convert to int
         max_value: Maximum allowed value
-        field_name: Name of the field for error messages
-        allow_negative: Whether to allow negative values
+        field_name: Name of field for error messages
+        allow_negative: Whether negative values are allowed
 
     Returns:
         The converted integer value
@@ -60,51 +180,51 @@ def _safe_int_conversion(
     Raises:
         ValueError: If value is invalid or out of bounds
     """
-    try:
-        result = int(value)
-        if not allow_negative and result < 0:
-            raise ValueError(f"{field_name} must be non-negative: {result}")
-        if result > max_value:
-            raise ValueError(f"{field_name} exceeds maximum {max_value}: {result}")
-        return result
-    except (ValueError, TypeError) as e:
-        raise ValueError(f"Invalid {field_name}: {value}") from e
+    # Try to convert to int if it's a string
+    if isinstance(value, str):
+        try:
+            value = int(value)
+        except ValueError:
+            raise ValueError(f"Invalid {field_name}: cannot convert '{value}' to integer")
+    elif not isinstance(value, int):
+        raise ValueError(f"Invalid {field_name}: must be an integer, got {type(value).__name__}")
+
+    if not allow_negative and value < 0:
+        raise ValueError(f"Invalid {field_name}: negative values not allowed, got {value}")
+
+    if value > max_value:
+        raise ValueError(f"Invalid {field_name}: exceeds maximum value {max_value}, got {value}")
+
+    return value
 
 
 def _validate_state_structure(raw_state: Mapping[str, Any]) -> None:
-    """Validate the basic structure and size of raw state data.
+    """Validate the basic structure of state data.
 
     Args:
         raw_state: The raw state data to validate
 
     Raises:
-        ValueError: If state structure is invalid
         TypeError: If required fields have wrong types
+        ValueError: If required fields are missing
     """
-    # Check size to prevent DoS
-    state_size = sys.getsizeof(raw_state)
-    if state_size > MAX_STATE_SIZE_BYTES:
-        raise ValueError(
-            f"State data exceeds maximum allowed size: {state_size} > {MAX_STATE_SIZE_BYTES}"
-        )
+    _validate_state_size(raw_state)
 
-    # Validate required top-level fields exist and have correct types
-    if "game" not in raw_state:
-        raise ValueError("raw_state missing required 'game' section")
-    if "map" not in raw_state:
-        raise ValueError("raw_state missing required 'map' section")
+    required_fields = ['game', 'map', 'players', 'units', 'cities']
+    for field in required_fields:
+        if field not in raw_state:
+            raise ValueError(f"Missing required field: {field}")
 
-    if not isinstance(raw_state.get("game"), dict):
+    # Validate field types
+    if not isinstance(raw_state['game'], dict):
         raise TypeError("'game' field must be a dictionary")
-    if not isinstance(raw_state.get("map"), dict):
+    if not isinstance(raw_state['map'], dict):
         raise TypeError("'map' field must be a dictionary")
-
-    # Validate optional sections have correct types if present
-    if "players" in raw_state and not isinstance(raw_state["players"], list):
+    if not isinstance(raw_state['players'], list):
         raise TypeError("'players' field must be a list")
-    if "units" in raw_state and not isinstance(raw_state["units"], list):
+    if not isinstance(raw_state['units'], list):
         raise TypeError("'units' field must be a list")
-    if "cities" in raw_state and not isinstance(raw_state["cities"], list):
+    if not isinstance(raw_state['cities'], list):
         raise TypeError("'cities' field must be a list")
 
 
@@ -143,15 +263,28 @@ def _safe_json_dumps(obj: Any, max_depth: int = MAX_JSON_DEPTH) -> str:
         return str(hash(str(obj)))
 
 
-@dataclass(slots=True)
-class FreeCivAction:
-    """Represents a normalized FreeCiv action."""
+class FreeCivAction(BaseModel):
+    """Represents a normalized FreeCiv action.
 
-    action_type: str
-    actor_id: int
-    target: Optional[Dict[str, Any]]
-    parameters: Dict[str, Any]
-    source: str
+    Example:
+        FreeCivAction(
+            action_type="unit_move",
+            actor_id=101,
+            target={"x": 3, "y": 4},
+            parameters={"direction": "NE"},
+            source="unit",
+        )
+    """
+
+    action_type: str = Field(..., min_length=1, max_length=50)
+    actor_id: int = Field(..., ge=0, le=MAX_UNIT_ID)
+    target: Optional[Dict[str, Any]] = None
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    source: str = Field(..., pattern=r'^(unit|city|player)$')
+
+    class Config:
+        validate_assignment = True
+        extra = "forbid"
 
     def to_packet(self) -> Dict[str, Any]:
         """Render the action into a protocol-friendly dictionary."""
@@ -165,21 +298,36 @@ class FreeCivAction:
         return payload
 
 
-@dataclass(slots=True)
-class FreeCivTile:
-    x: int
-    y: int
-    terrain: str
-    resource: Optional[str]
-    city_id: Optional[int]
-    unit_ids: List[int] = field(default_factory=list)
-    improvements: List[str] = field(
-        default_factory=list
-    )  # "road", "railroad", "irrigation", "mine", etc.
+class FreeCivTile(BaseModel):
+    """Represents a single tile on the FreeCiv map."""
+
+    x: int = Field(..., ge=0, le=10000)  # Large maps can be up to 200x200
+    y: int = Field(..., ge=0, le=10000)
+    terrain: str = Field(..., min_length=1, max_length=20)
+    resource: Optional[str] = Field(None, max_length=20)
+    city_id: Optional[int] = Field(None, ge=0, le=MAX_CITY_ID)
+    unit_ids: List[int] = Field(default_factory=list)
+    improvements: List[str] = Field(default_factory=list)  # "road", "railroad", etc.
     pollution: bool = False
     fallout: bool = False
-    owner: Optional[int] = None  # Territory ownership
-    worked_by: Optional[int] = None  # City ID that's working this tile
+    owner: Optional[int] = Field(None, ge=0, le=MAX_PLAYER_ID)  # Territory ownership
+    worked_by: Optional[int] = Field(None, ge=0, le=MAX_CITY_ID)  # City working this tile
+
+    class Config:
+        validate_assignment = True
+        extra = "forbid"
+
+    @validator('unit_ids', each_item=True)
+    def validate_unit_ids(cls, v):
+        if not (0 <= v <= MAX_UNIT_ID):
+            raise ValueError(f'Unit ID {v} exceeds maximum {MAX_UNIT_ID}')
+        return v
+
+    @validator('improvements', each_item=True)
+    def validate_improvements(cls, v):
+        if len(v) > 30:  # Reasonable limit for improvement names
+            raise ValueError(f'Improvement name too long: {v}')
+        return v
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -197,45 +345,90 @@ class FreeCivTile:
         }
 
 
-@dataclass(slots=True)
-class FreeCivPlayer:
-    player_id: int
-    name: str
-    nation: str
-    score: int
-    gold: int
-    techs: List[str]
-    government: Optional[str]
-    science: int = 0
-    research_target: Optional[str] = None
-    research_progress: int = 0
-    diplomatic_relations: Dict[int, str] = field(
-        default_factory=dict
-    )  # player_id -> "war", "peace", "ally", "ceasefire"
-    trade_routes: List[Dict[str, Any]] = field(default_factory=list)
-    luxuries_rate: int = 0
-    science_rate: int = 50
-    tax_rate: int = 50
+class FreeCivPlayer(BaseModel):
+    """Represents a FreeCiv player."""
+
+    player_id: int = Field(..., ge=0, le=MAX_PLAYER_ID)
+    name: str = Field(..., min_length=1, max_length=50)
+    nation: str = Field(..., min_length=1, max_length=30)
+    score: int = Field(..., ge=0)
+    gold: int = Field(..., ge=0)
+    techs: List[str] = Field(default_factory=list)
+    government: Optional[str] = Field(None, max_length=20)
+    science: int = Field(0, ge=0)
+    research_target: Optional[str] = Field(None, max_length=30)
+    research_progress: int = Field(0, ge=0, le=100)
+    diplomatic_relations: Dict[int, str] = Field(default_factory=dict)
+    trade_routes: List[Dict[str, Any]] = Field(default_factory=list)
+    luxuries_rate: int = Field(0, ge=0, le=100)
+    science_rate: int = Field(50, ge=0, le=100)
+    tax_rate: int = Field(50, ge=0, le=100)
+
+    class Config:
+        validate_assignment = True
+        extra = "forbid"
+
+    @validator('techs', each_item=True)
+    def validate_techs(cls, v):
+        if len(v) > 50:  # Reasonable limit for tech names
+            raise ValueError(f'Tech name too long: {v}')
+        return v
+
+    @validator('diplomatic_relations')
+    def validate_diplomatic_relations(cls, v):
+        valid_statuses = {"war", "peace", "ally", "ceasefire", "neutral"}
+        for player_id, status in v.items():
+            if not (0 <= player_id <= MAX_PLAYER_ID):
+                raise ValueError(f'Invalid player ID in diplomatic relations: {player_id}')
+            if status not in valid_statuses:
+                raise ValueError(f'Invalid diplomatic status: {status}')
+        return v
+
+    @model_validator(mode='after')
+    def validate_rates_sum(self):
+        """Validate that tax, science, and luxury rates sum to 100."""
+        tax = self.tax_rate
+        science = self.science_rate
+        luxury = self.luxuries_rate
+        if tax + science + luxury != 100:
+            raise ValueError(f'Tax, science, and luxury rates must sum to 100, got {tax + science + luxury}')
+        return self
 
 
-@dataclass(slots=True)
-class FreeCivUnit:
-    unit_id: int
-    owner: int
-    kind: str
-    position: Tuple[int, int]
-    hp: int
-    moves_left: int
-    veteran: bool
-    orders: List[str]
-    available_actions: List[FreeCivAction]
+class FreeCivUnit(BaseModel):
+    """Represents a FreeCiv unit."""
+
+    unit_id: int = Field(..., ge=0, le=MAX_UNIT_ID)
+    owner: int = Field(..., ge=0, le=MAX_PLAYER_ID)
+    kind: str = Field(..., min_length=1, max_length=30)
+    position: Tuple[int, int] = Field(...)
+    hp: int = Field(..., ge=0, le=100)
+    moves_left: int = Field(..., ge=0, le=10)
+    veteran: bool = False
+    orders: List[str] = Field(default_factory=list)
+    available_actions: List[FreeCivAction] = Field(default_factory=list)
     fortified: bool = False
-    activity: Optional[str] = (
-        None  # "exploring", "building_road", "irrigating", "mining", etc.
-    )
-    fuel: int = -1  # -1 for unlimited, 0+ for air/naval units
-    transport_id: Optional[int] = None  # ID of transporting unit (ships, carriers)
-    cargo_ids: List[int] = field(default_factory=list)  # Units being transported
+    activity: Optional[str] = None  # "exploring", "building_road", etc.
+    fuel: int = Field(-1, ge=-1)  # -1 for unlimited, 0+ for air/naval units
+    transport_id: Optional[int] = Field(None, ge=0, le=MAX_UNIT_ID)
+    cargo_ids: List[int] = Field(default_factory=list)
+
+    class Config:
+        validate_assignment = True
+        extra = "forbid"
+
+    @validator('position')
+    def validate_position(cls, v):
+        x, y = v
+        if not (0 <= x <= 10000 and 0 <= y <= 10000):
+            raise ValueError(f'Position coordinates out of bounds: {v}')
+        return v
+
+    @validator('cargo_ids', each_item=True)
+    def validate_cargo_ids(cls, v):
+        if not (0 <= v <= MAX_UNIT_ID):
+            raise ValueError(f'Cargo unit ID {v} exceeds maximum {MAX_UNIT_ID}')
+        return v
 
     def move(self, x: int, y: int) -> None:
         self.position = (x, y)
@@ -243,34 +436,63 @@ class FreeCivUnit:
         self.fortified = False  # Moving breaks fortification
 
 
-@dataclass(slots=True)
-class FreeCivCity:
-    city_id: int
-    owner: int
-    name: str
-    position: Tuple[int, int]
-    population: int
-    production: Dict[str, Any]
-    specialists: Dict[str, int]
-    available_actions: List[FreeCivAction]
-    buildings: List[str] = field(default_factory=list)
-    food_storage: int = 0
-    shield_storage: int = 0
-    trade_routes: List[int] = field(default_factory=list)  # IDs of connected cities
+class FreeCivCity(BaseModel):
+    """Represents a FreeCiv city."""
+
+    city_id: int = Field(..., ge=0, le=MAX_CITY_ID)
+    owner: int = Field(..., ge=0, le=MAX_PLAYER_ID)
+    name: str = Field(..., min_length=1, max_length=30)
+    position: Tuple[int, int] = Field(...)
+    population: int = Field(..., ge=1, le=50)  # Cities typically max at around 30-40
+    production: Dict[str, Any] = Field(default_factory=dict)
+    specialists: Dict[str, int] = Field(default_factory=dict)
+    available_actions: List[FreeCivAction] = Field(default_factory=list)
+    buildings: List[str] = Field(default_factory=list)
+    food_storage: int = Field(0, ge=0)
+    shield_storage: int = Field(0, ge=0)
+    trade_routes: List[int] = Field(default_factory=list)  # IDs of connected cities
     under_siege: bool = False
     celebrating: bool = False
     disorder: bool = False
-    worked_tiles: List[Tuple[int, int]] = field(
-        default_factory=list
-    )  # Tiles being worked by citizens
+    worked_tiles: List[Tuple[int, int]] = Field(default_factory=list)
+
+    class Config:
+        validate_assignment = True
+        extra = "forbid"
+
+    @validator('position')
+    def validate_position(cls, v):
+        x, y = v
+        if not (0 <= x <= 10000 and 0 <= y <= 10000):
+            raise ValueError(f'Position coordinates out of bounds: {v}')
+        return v
+
+    @validator('buildings', each_item=True)
+    def validate_buildings(cls, v):
+        if len(v) > 50:  # Reasonable limit for building names
+            raise ValueError(f'Building name too long: {v}')
+        return v
 
 
-@dataclass(slots=True)
-class FreeCivMap:
-    width: int
-    height: int
-    tiles: Dict[Tuple[int, int], FreeCivTile]
-    visibility: Dict[int, set[Tuple[int, int]]]
+class FreeCivMap(BaseModel):
+    """Represents the FreeCiv game map."""
+
+    width: int = Field(..., ge=1, le=10000)
+    height: int = Field(..., ge=1, le=10000)
+    tiles: Dict[Tuple[int, int], FreeCivTile] = Field(default_factory=dict)
+    visibility: Dict[int, set[Tuple[int, int]]] = Field(default_factory=dict)
+
+    class Config:
+        validate_assignment = True
+        extra = "forbid"
+        arbitrary_types_allowed = True  # Allow set type in visibility
+
+    @validator('visibility')
+    def validate_visibility(cls, v):
+        for player_id in v.keys():
+            if not (0 <= player_id <= MAX_PLAYER_ID):
+                raise ValueError(f'Invalid player ID in visibility: {player_id}')
+        return v
 
     def visible_tiles(self, player_id: int) -> List[FreeCivTile]:
         coords = self.visibility.get(player_id, set())
@@ -312,8 +534,10 @@ class FreeCivState(_GameStateBase):
             ValueError: If state data is invalid or exceeds size limits
             TypeError: If required fields have wrong types
         """
-        # Avoid calling pyspiel.State.__init__ which is implemented in C++ and expects no subclassing.
-        super().__init__() if pyspiel is None else None  # type: ignore[misc]
+        if pyspiel is not None and _PY_SPIEL_DUMMY_GAME is not None:
+            pyspiel.State.__init__(self, _PY_SPIEL_DUMMY_GAME)  # type: ignore[attr-defined]
+        else:
+            super().__init__()  # type: ignore[misc]
 
         # Validate input structure and size
         _validate_state_structure(raw_state)
@@ -330,15 +554,7 @@ class FreeCivState(_GameStateBase):
         self._is_terminal: bool = bool(self.game.get("is_over", False))
 
         # Parse scores with validation
-        scores = self.game.get("scores", {})
-        if not isinstance(scores, dict):
-            raise TypeError("'scores' field must be a dictionary")
-
-        self._scores: Dict[str, int] = {}
-        for k, v in scores.items():
-            player_id = _safe_int_conversion(k, MAX_PLAYER_ID, f"score player_id '{k}'")
-            score_value = _safe_int_conversion(v, sys.maxsize, f"score for player {k}")
-            self._scores[str(player_id)] = score_value
+        self._scores = self._parse_scores(self.game.get("scores", {}))
 
         # Validate current player
         current_player_raw = self.game.get("current_player", -1)
@@ -354,10 +570,10 @@ class FreeCivState(_GameStateBase):
         self.units = self._parse_units(raw_state.get("units", []))
         self.cities = self._parse_cities(raw_state.get("cities", []))
 
-        self._action_cache: Dict[int, List[FreeCivAction]] = {}
-        self._observation_cache: Dict[Tuple[int, str], Any] = {}
-        self._visibility_cache: Dict[int, set[Tuple[int, int]]] = {}
-        self._threat_analysis_cache: Dict[int, Dict[str, Any]] = {}
+        self._action_cache: LRUCache = LRUCache(max_size=ACTION_CACHE_SIZE)
+        self._observation_cache: LRUCache = LRUCache(max_size=OBSERVATION_CACHE_SIZE)
+        self._visibility_cache: LRUCache = LRUCache(max_size=VISIBILITY_CACHE_SIZE)
+        self._threat_analysis_cache: LRUCache = LRUCache(max_size=THREAT_ANALYSIS_CACHE_SIZE)
         self._cache_version: int = 0  # Increment when state changes
 
     # ------------------------------------------------------------------
@@ -391,6 +607,29 @@ class FreeCivState(_GameStateBase):
         return FreeCivMap(
             width=width, height=height, tiles=tiles, visibility=visibility
         )
+
+    def _parse_scores(self, scores_data: Mapping[str, Any]) -> Dict[str, int]:
+        """Parse and validate score data.
+
+        Args:
+            scores_data: Raw scores data from state
+
+        Returns:
+            Dictionary mapping player ID strings to scores
+
+        Raises:
+            TypeError: If scores_data is not a dictionary
+            ValueError: If player IDs or scores are invalid
+        """
+        if not isinstance(scores_data, dict):
+            raise TypeError("'scores' field must be a dictionary")
+
+        scores: Dict[str, int] = {}
+        for k, v in scores_data.items():
+            player_id = _safe_int_conversion(k, MAX_PLAYER_ID, f"score player_id '{k}'")
+            score_value = _safe_int_conversion(v, sys.maxsize, f"score for player {k}")
+            scores[str(player_id)] = score_value
+        return scores
 
     def _parse_players(
         self, players_data: Sequence[Mapping[str, Any]]
@@ -664,30 +903,37 @@ class FreeCivState(_GameStateBase):
     ) -> Sequence[int]:  # pragma: no cover - compatibility hook
         player_id = self._current_player_id if player is None else player + 1
         legal = self.get_legal_actions(player_id)
-        self._action_cache[player_id] = list(legal)
+        cache_key = (player_id, self._cache_version)
+        self._action_cache.set(cache_key, list(legal))
         return list(range(len(legal)))
 
     def action_to_string(self, player: int, action_id: int) -> str:
         """Convert action index to human-readable string."""
         player_id = player + 1 if player >= 0 else self._current_player_id
-        if player_id not in self._action_cache:
+        cache_key = (player_id, self._cache_version)
+        cached_actions = self._action_cache.get(cache_key)
+        if cached_actions is None:
             self.get_legal_actions(player_id)
+            cached_actions = self._action_cache.get(cache_key)
 
-        if action_id >= len(self._action_cache[player_id]):
+        if action_id >= len(cached_actions):
             raise ValueError(
                 f"Action index {action_id} out of bounds for player {player_id}"
             )
 
-        action = self._action_cache[player_id][action_id]
+        action = cached_actions[action_id]
         return self._action_to_string(action)
 
     def string_to_action(self, player: int, action_str: str) -> int:
         """Convert human-readable string to action index."""
         player_id = player + 1 if player >= 0 else self._current_player_id
-        if player_id not in self._action_cache:
+        cache_key = (player_id, self._cache_version)
+        cached_actions = self._action_cache.get(cache_key)
+        if cached_actions is None:
             self.get_legal_actions(player_id)
+            cached_actions = self._action_cache.get(cache_key)
 
-        for i, action in enumerate(self._action_cache[player_id]):
+        for i, action in enumerate(cached_actions):
             if self._action_to_string(action) == action_str:
                 return i
 
@@ -698,13 +944,16 @@ class FreeCivState(_GameStateBase):
     def apply_action_by_index(self, action_id: int) -> None:
         """Apply action by OpenSpiel action index."""
         player_id = self._current_player_id
-        if player_id not in self._action_cache:
+        cache_key = (player_id, self._cache_version)
+        cached_actions = self._action_cache.get(cache_key)
+        if cached_actions is None:
             self.get_legal_actions(player_id)
+            cached_actions = self._action_cache.get(cache_key)
 
-        if action_id >= len(self._action_cache[player_id]):
+        if action_id >= len(cached_actions):
             raise ValueError(f"Action index {action_id} out of bounds")
 
-        action = self._action_cache[player_id][action_id]
+        action = cached_actions[action_id]
         self.apply_action(action)
 
     def is_terminal(self) -> bool:
@@ -717,6 +966,9 @@ class FreeCivState(_GameStateBase):
         for player_id in sorted(self.players):
             ordered_scores.append(float(self._scores.get(str(player_id), 0)))
         return ordered_scores
+
+    def __str__(self) -> str:
+        return f"FreeCivState(turn={self.turn}, phase={self.phase}, current_player={self._current_player_id})"
 
     # ------------------------------------------------------------------
     # Adapter functionality
@@ -743,13 +995,15 @@ class FreeCivState(_GameStateBase):
             )
             deduped[key] = action
         result = list(deduped.values())
-        self._action_cache[player_id] = result
-        return [replace(action) for action in result]
+        cache_key = (player_id, self._cache_version)
+        self._action_cache.set(cache_key, result)
+        return [action.model_copy() for action in result]
 
     def to_observation(self, player_id: int, format: str = "enhanced") -> Any:
-        cache_key = (player_id, format)
-        if cache_key in self._observation_cache:
-            return self._observation_cache[cache_key]
+        cache_key = (player_id, format, self._cache_version)
+        cached_result = self._observation_cache.get(cache_key)
+        if cached_result is not None:
+            return cached_result
 
         if format == "enhanced":
             observation = self._build_llm_observation(player_id)
@@ -760,7 +1014,7 @@ class FreeCivState(_GameStateBase):
         else:
             raise ValueError(f"Unsupported observation format: {format}")
 
-        self._observation_cache[cache_key] = observation
+        self._observation_cache.set(cache_key, observation)
         return observation
 
     def apply_action(self, action: FreeCivAction) -> None:
@@ -812,15 +1066,19 @@ class FreeCivState(_GameStateBase):
 
     def _get_cached_visibility(self, player_id: int) -> set[Tuple[int, int]]:
         """Get cached visibility for player to avoid recomputing."""
-        if player_id not in self._visibility_cache:
-            self._visibility_cache[player_id] = self.map.visibility.get(
-                player_id, set()
-            )
-        return self._visibility_cache[player_id]
+        cache_key = (player_id, self._cache_version)
+        cached_result = self._visibility_cache.get(cache_key)
+        if cached_result is None:
+            visibility = self.map.visibility.get(player_id, set())
+            self._visibility_cache.set(cache_key, visibility)
+            return visibility
+        return cached_result
 
     def _get_threat_analysis(self, player_id: int) -> Dict[str, Any]:
         """Get cached threat analysis for performance."""
-        if player_id not in self._threat_analysis_cache:
+        cache_key = (player_id, self._cache_version)
+        cached_result = self._threat_analysis_cache.get(cache_key)
+        if cached_result is None:
             friendly_units = [u for u in self.units.values() if u.owner == player_id]
             enemy_units = [u for u in self.units.values() if u.owner != player_id]
 
@@ -837,14 +1095,16 @@ class FreeCivState(_GameStateBase):
                         threat_count += 1
                         break
 
-            self._threat_analysis_cache[player_id] = {
+            threat_analysis = {
                 "threat_count": threat_count,
                 "units_at_risk": units_at_risk,
                 "friendly_count": len(friendly_units),
                 "enemy_count": len(enemy_units),
             }
+            self._threat_analysis_cache.set(cache_key, threat_analysis)
+            return threat_analysis
 
-        return self._threat_analysis_cache[player_id]
+        return cached_result
 
     def _action_to_string(self, action: FreeCivAction) -> str:
         """Convert FreeCivAction to human-readable string."""
@@ -1104,7 +1364,7 @@ class FreeCivState(_GameStateBase):
         return "."
 
     def _build_llm_observation(
-        self, player_id: int, max_tokens: int = 4000
+        self, player_id: int, max_tokens: int = DEFAULT_MAX_TOKENS
     ) -> Dict[str, Any]:
         """Build LLM-optimized observation with adaptive detail levels.
 
@@ -1125,6 +1385,17 @@ class FreeCivState(_GameStateBase):
             - actions: Legal action summary and types
             - metrics: Token usage and detail level metrics
 
+        Example output structure::
+
+            {
+                "metadata": {"turn": 5, "phase": "movement"},
+                "strategic": {"scoreboard": {"player": 42}},
+                "tactical": {"unit_counts": {"friendly": 3, "enemy": 2}},
+                "economic": {"cities": [...]},
+                "actions": {"legal": ["unit_move", "city_production"]},
+                "metrics": {"estimated_tokens": 850, "detail_level": "medium"}
+            }
+
         Note:
             Uses cached threat analysis and visibility data for performance.
             Token estimation is approximate (4 chars ≈ 1 token for JSON).
@@ -1136,7 +1407,76 @@ class FreeCivState(_GameStateBase):
         cities = self._get_visible_cities(player_id)
 
         # Build core strategic information first (always included)
-        core_observation = {
+        core_observation = self._build_core_strategic_observation(player_id, player)
+
+        # Add tactical summary (condensed) using cached threat analysis
+        tactical_summary = self._build_tactical_summary(player_id, cities)
+
+        # Estimate token usage so far
+        base_size = self._estimate_token_count(
+            core_observation
+        ) + self._estimate_token_count(tactical_summary)
+
+        # Adaptive detail level based on remaining token budget
+        remaining_tokens = max_tokens - base_size
+        detail_level = self._determine_detail_level(remaining_tokens)
+
+        # Add detailed sections based on available space
+        if detail_level >= 1:  # Basic details
+            core_observation["tactical"] = tactical_summary
+            if detail_level >= 2:  # More details
+                core_observation["tactical"]["priority_units"] = (
+                    self._get_priority_units(friendly_units, enemy_units)[:MAX_PRIORITY_UNITS]
+                )
+                if detail_level >= 3:  # Full details
+                    core_observation["tactical"]["visible_enemy_units"] = enemy_units[
+                        :MAX_VISIBLE_ENEMY_UNITS
+                    ]
+                    core_observation["economic"] = {
+                        "cities": self._compress_city_data(cities, player_id),
+                        "resources": self._extract_visible_resources(player_id)[
+                            :MAX_VISIBLE_RESOURCES
+                        ],
+                    }
+
+        # Add legal actions summary (always include count, details if space allows)
+        legal_actions = self.get_legal_actions(player_id)
+        core_observation["actions"] = {"count": len(legal_actions)}
+
+        if remaining_tokens > MIN_TOKENS_FOR_ACTION_DETAILS:  # Include action details if space permits
+            action_types = {}
+            for action in legal_actions[:MAX_ACTION_TYPES_DETAIL]:
+                action_types[action.action_type] = (
+                    action_types.get(action.action_type, 0) + 1
+                )
+            core_observation["actions"]["types"] = action_types
+
+        # Final metrics
+        observation_str = json.dumps(core_observation)
+        token_count = self._estimate_token_count(core_observation)
+
+        core_observation["metrics"] = {
+            "char_count": len(observation_str),
+            "estimated_tokens": token_count,
+            "detail_level": detail_level,
+            "truncated": token_count > max_tokens,
+        }
+
+        return core_observation
+
+    def _build_core_strategic_observation(
+        self, player_id: int, player: Optional[FreeCivPlayer]
+    ) -> Dict[str, Any]:
+        """Build core strategic observation data that's always included.
+
+        Args:
+            player_id: The player to build observation for
+            player: The player object (may be None)
+
+        Returns:
+            Dictionary containing metadata and strategic information
+        """
+        return {
             "metadata": {
                 "turn": self.turn,
                 "phase": self.phase,
@@ -1175,9 +1515,20 @@ class FreeCivState(_GameStateBase):
             },
         }
 
-        # Add tactical summary (condensed) using cached threat analysis
+    def _build_tactical_summary(
+        self, player_id: int, cities: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Build tactical summary using cached threat analysis.
+
+        Args:
+            player_id: The player to build tactical summary for
+            cities: List of visible cities
+
+        Returns:
+            Dictionary containing tactical summary information
+        """
         threat_data = self._get_threat_analysis(player_id)
-        tactical_summary = {
+        return {
             "unit_counts": {
                 "friendly": threat_data["friendly_count"],
                 "enemy": threat_data["enemy_count"],
@@ -1186,58 +1537,6 @@ class FreeCivState(_GameStateBase):
             "city_count": len([c for c in cities if c["owner"] == player_id]),
             "threats": threat_data["threat_count"],
         }
-
-        # Estimate token usage so far
-        base_size = self._estimate_token_count(
-            core_observation
-        ) + self._estimate_token_count(tactical_summary)
-
-        # Adaptive detail level based on remaining token budget
-        remaining_tokens = max_tokens - base_size
-        detail_level = self._determine_detail_level(remaining_tokens)
-
-        # Add detailed sections based on available space
-        if detail_level >= 1:  # Basic details
-            core_observation["tactical"] = tactical_summary
-            if detail_level >= 2:  # More details
-                core_observation["tactical"]["priority_units"] = (
-                    self._get_priority_units(friendly_units, enemy_units)[:5]
-                )
-                if detail_level >= 3:  # Full details
-                    core_observation["tactical"]["visible_enemy_units"] = enemy_units[
-                        :10
-                    ]  # Limit to top 10
-                    core_observation["economic"] = {
-                        "cities": self._compress_city_data(cities, player_id),
-                        "resources": self._extract_visible_resources(player_id)[
-                            :5
-                        ],  # Top 5 resources
-                    }
-
-        # Add legal actions summary (always include count, details if space allows)
-        legal_actions = self.get_legal_actions(player_id)
-        core_observation["actions"] = {"count": len(legal_actions)}
-
-        if remaining_tokens > 1000:  # Include action details if space permits
-            action_types = {}
-            for action in legal_actions[:20]:  # Limit to 20 actions
-                action_types[action.action_type] = (
-                    action_types.get(action.action_type, 0) + 1
-                )
-            core_observation["actions"]["types"] = action_types
-
-        # Final metrics
-        observation_str = json.dumps(core_observation)
-        token_count = self._estimate_token_count(core_observation)
-
-        core_observation["metrics"] = {
-            "char_count": len(observation_str),
-            "estimated_tokens": token_count,
-            "detail_level": detail_level,
-            "truncated": token_count > max_tokens,
-        }
-
-        return core_observation
 
     def _get_visible_units(self, player_id: int) -> List[Dict[str, Any]]:
         visible_coords = self._get_cached_visibility(player_id)
@@ -1292,11 +1591,11 @@ class FreeCivState(_GameStateBase):
 
     def _determine_detail_level(self, remaining_tokens: int) -> int:
         """Determine level of detail based on remaining token budget."""
-        if remaining_tokens > 2500:
+        if remaining_tokens > DETAIL_LEVEL_TOKENS['full']:
             return 3  # Full details
-        elif remaining_tokens > 1500:
+        elif remaining_tokens > DETAIL_LEVEL_TOKENS['medium']:
             return 2  # Medium details
-        elif remaining_tokens > 500:
+        elif remaining_tokens > DETAIL_LEVEL_TOKENS['basic']:
             return 1  # Basic details
         else:
             return 0  # Minimal details

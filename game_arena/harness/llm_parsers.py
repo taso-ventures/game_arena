@@ -143,6 +143,42 @@ OpenSpielChessInstructionConfig_V0 = InstructionConfig(
     no_action_answer="LLMEXTRACT_NO_PROPOSED_MOVE",
 )
 
+FreeCivInstructionConfig_V0 = InstructionConfig(
+    name="FreeCivInstructionConfig_V0",
+    instruction="""## Instructions for Extracting Final Proposed FreeCiv Action
+
+**Objective:** Given a response containing context and the final proposed FreeCiv action, extract the final proposed FreeCiv action without excess formatting.
+
+**Process:**
+
+1. **Analyze the response:** From the response, identify the context preceding the final proposed FreeCiv action and the final proposed FreeCiv action itself.
+   If no final proposed FreeCiv action is present, skip the steps below and then present "Clean Action: LLMEXTRACT_NO_PROPOSED_ACTION" on a new line (no additional markings or explanations are needed).
+
+2. **Extract the final proposed FreeCiv action:** Extract the final proposed FreeCiv action. FreeCiv actions have the following format:
+   - Action type (e.g., unit_move, city_production, unit_attack, etc.)
+   - Actor identifier (unit ID or city ID)
+   - Target information (coordinates, target ID, or parameters)
+
+   Examples of valid FreeCiv actions:
+   - unit_move_settlers(101)_to(2,3)
+   - city_production_athens(301)_target(warriors)
+   - unit_attack_warrior(102)_target(203)
+   - unit_fortify_legions(105)
+   - city_build_improvement_rome(302)_target(granary)
+
+3. **Remove excess formatting:** From the extracted final proposed FreeCiv action, remove excess formatting while preserving the action structure:
+   - Remove LaTeX formatting, HTML tags, surrounding brackets
+   - Remove excess newlines, leading whitespace, trailing whitespace
+   - Remove terminating periods that are not part of the action
+   - Keep underscores, parentheses, and numbers that are part of the action format
+
+4. **Present the clean final proposed FreeCiv action:** Present the clean final proposed FreeCiv action on a new line, preceded by "Clean Action: ".
+
+**Note:** No additional markings or explanations are needed beyond "Clean Action: " and the clean final proposed FreeCiv action.""",
+    final_answer_prefix="Clean Action: ",
+    no_action_answer="LLMEXTRACT_NO_PROPOSED_ACTION",
+)
+
 
 def _parse_extractor_response(*, response: str, final_answer_prefix: str) -> str:
     """Parses the response from the extractor LLM."""

@@ -21,6 +21,7 @@ import datetime
 import json
 import multiprocessing
 import os
+import re
 import threading
 import time
 from typing import Any, Mapping, Sequence
@@ -32,6 +33,25 @@ from absl import logging
 from game_arena.harness import model_generation, tournament_util
 
 DEEPSEEK_THOUGHT_TAG_START = "<think>"
+
+
+def _sanitize_url_for_logging(url: str) -> str:
+    """Sanitize URL by removing potential API keys or passwords for safe logging.
+
+    Args:
+        url: The URL to sanitize
+
+    Returns:
+        Sanitized URL with sensitive parameters redacted
+    """
+    # Remove common API key parameters
+    sanitized = re.sub(r'([?&])(api_key|key|token|password|secret)=[^&]*',
+                       r'\1\2=***', url, flags=re.IGNORECASE)
+
+    # Remove API keys in path segments (e.g., /api/v1/API_KEY_HERE/...)
+    sanitized = re.sub(r'/[A-Za-z0-9_-]{20,}/', '/***/', sanitized)
+
+    return sanitized
 DEEPSEEK_THOUGHT_TAG_END = "</think>"
 
 
@@ -638,12 +658,13 @@ async def _post_request_async(
     timeout: datetime.timedelta,
 ) -> PostRequestResult:
     """Posts a request asynchronously and returns the result."""
-    print(f"Starting POST for '{name}' to {url}")
+    sanitized_url = _sanitize_url_for_logging(url)
+    logging.debug("Starting POST for '%s' to %s", name, sanitized_url)
     try:
         async with session.post(
             url, json=payload, headers=headers, timeout=timeout.total_seconds()
         ) as response:
-            print(f"Finished POST for '{name}' with status: {response.status}")
+            logging.info("Finished POST for '%s' with status: %d", name, response.status)
             # Raise an exception for bad status codes (4xx or 5xx)
             response.raise_for_status()
 
@@ -653,10 +674,10 @@ async def _post_request_async(
             )
 
     except asyncio.CancelledError:
-        print(f"POST for '{name}' was cancelled.")
+        logging.warning("POST for '%s' was cancelled.", name)
         raise
     except Exception as e:
-        print(f"POST for '{name}' failed: {type(e).__name__}")
+        logging.error("POST for '%s' failed: %s", name, type(e).__name__)
         # Re-raise the exception so the main loop knows it failed
         raise
 
