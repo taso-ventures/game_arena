@@ -18,27 +18,58 @@ import difflib
 import hashlib
 import json
 import re
-from typing import Any, Dict, List, Optional
+import signal
+import threading
+from typing import Any, Dict, List, Optional, TypedDict
 
+from absl import logging
 from game_arena.harness import llm_parsers, parsers
+from game_arena.harness.freeciv_cache import LRUCache
+from game_arena.harness.freeciv_parser_config import FreeCivParserConfig, DEFAULT_CONFIG
 from game_arena.harness.freeciv_state import FreeCivAction
 from game_arena.harness.freeciv_state_stubs import FreeCivGameStateStub
+from game_arena.harness.freeciv_timeout import TimeoutProtectedRegex
 
-# Performance and security constants
-MAX_INPUT_SIZE = 10 * 1024  # 10KB max input size
-REGEX_TIMEOUT_SECONDS = 5
+# TypedDict definitions for structured data
+class TargetDict(TypedDict, total=False):
+  """Type definition for action target information."""
+  x: int  # X coordinate
+  y: int  # Y coordinate
+  id: int  # Target entity ID
+  value: str  # Target value/name
+  name: str  # Target name
+  tech: str  # Technology name
 
-# Similarity calculation constants
-SIMILARITY_THRESHOLD = 0.3
-TOKEN_WEIGHT = 0.3
-NUMBER_WEIGHT = 0.3
-ACTION_WEIGHT = 0.3  # Increased weight for action matching
-EDIT_WEIGHT = 0.1
 
-# Bonus score constants
-EXACT_SUBSTRING_BONUS = 0.15
-PARTIAL_TOKEN_BONUS = 0.05
-ACTION_MATCH_BONUS = 0.1
+class ParametersDict(TypedDict, total=False):
+  """Type definition for action parameters."""
+  direction: str  # Movement direction
+  damage_type: str  # Attack damage type
+  priority: int  # Action priority
+
+
+class ParseMetrics(TypedDict):
+  """Type definition for parser performance metrics."""
+  parse_time_ms: float
+  method_used: str
+  cache_hit: bool
+  input_size: int
+
+
+# Custom exceptions for better error handling
+class FreeCivParserError(Exception):
+  """Base exception for FreeCiv parser errors."""
+  pass
+
+
+class FreeCivParserTimeoutError(FreeCivParserError):
+  """Raised when parser operations timeout."""
+  pass
+
+
+class FreeCivParserInputError(FreeCivParserError):
+  """Raised when input validation fails."""
+  pass
 
 # FreeCiv instruction config for LLM-based parsing
 FreeCivInstructionConfig_V0 = llm_parsers.InstructionConfig(
@@ -93,9 +124,16 @@ class FreeCivLLMParser(llm_parsers.LLMParser):
 class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
     """Rule-based parser for FreeCiv action strings."""
 
-    def __init__(self):
-        """Initialize FreeCiv rule-based parser."""
+    def __init__(self, config: Optional[FreeCivParserConfig] = None):
+        """Initialize FreeCiv rule-based parser.
+
+        Args:
+          config: Parser configuration, uses default if None
+        """
         super().__init__()
+        self._config = config or DEFAULT_CONFIG
+        # Initialize timeout-protected regex
+        self._protected_regex = TimeoutProtectedRegex(self._config.regex_timeout_seconds)
         # Compile regex patterns for different action types
         self._action_patterns = {
             "unit_move": re.compile(r"unit_move_([^_]+)\((\d+)\)_to\((\d+),(\d+)\)"),
@@ -123,43 +161,94 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
         Returns:
             Parsed action string if successful, None otherwise
         """
+        import time
+        start_time = time.perf_counter()
         text = parser_input.text.strip()
 
         # Security: Validate input size to prevent DoS attacks
-        if len(text) > MAX_INPUT_SIZE:
+        if len(text) > self._config.max_input_size:
+            if self._config.enable_debug_logging:
+                logging.debug("Input size %d exceeds maximum %d", len(text), self._config.max_input_size)
             return None
 
         # Try JSON parsing first (most structured)
         json_action = self._try_parse_json(text)
         if json_action:
+            if self._config.enable_performance_logging:
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                logging.info(
+                    "Parse completed: method=json, time=%.2fms, input_size=%d, success=True",
+                    elapsed_ms, len(text)
+                )
             return json_action
 
         # Try natural language parsing using FreeCivAction model
         natural_action = self._try_parse_natural_language(text, parser_input)
         if natural_action:
+            if self._config.enable_performance_logging:
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                logging.info(
+                    "Parse completed: method=natural_language, time=%.2fms, input_size=%d, success=True",
+                    elapsed_ms, len(text)
+                )
             return natural_action
 
         # Fall back to existing regex-based parsing
         # First try matching the original text (in case it's already well-formed)
         for action_type, pattern in self._action_patterns.items():
-            match = pattern.search(text)
-            if match:
-                # Return the original text if it already matches perfectly
-                return text
+            try:
+                match = self._protected_regex.search(pattern, text)
+                if match:
+                    # Return the original text if it already matches perfectly
+                    if self._config.enable_performance_logging:
+                        elapsed_ms = (time.perf_counter() - start_time) * 1000
+                        logging.info(
+                            "Parse completed: method=regex_direct, time=%.2fms, input_size=%d, success=True",
+                            elapsed_ms, len(text)
+                        )
+                    return text
+            except Exception as e:
+                if self._config.enable_debug_logging:
+                    logging.debug("Regex timeout in direct match for %s: %s", action_type, e)
+                continue
 
         # If no direct match, try with cleaned text
         cleaned_text = self._clean_text(text)
         for action_type, pattern in self._action_patterns.items():
-            match = pattern.search(cleaned_text)
-            if match:
-                # Reconstruct the action string in canonical format
-                return self._reconstruct_action(action_type, match.groups())
+            try:
+                match = self._protected_regex.search(pattern, cleaned_text)
+                if match:
+                    # Reconstruct the action string in canonical format
+                    result = self._reconstruct_action(action_type, match.groups())
+                    if self._config.enable_performance_logging:
+                        elapsed_ms = (time.perf_counter() - start_time) * 1000
+                        logging.info(
+                            "Parse completed: method=regex_cleaned, time=%.2fms, input_size=%d, success=True",
+                            elapsed_ms, len(text)
+                        )
+                    return result
+            except Exception as e:
+                if self._config.enable_debug_logging:
+                    logging.debug("Regex timeout in cleaned match for %s: %s", action_type, e)
+                continue
 
         # If no pattern matches, try soft matching against legal moves
+        result = None
+        method_used = "none"
         if parser_input.legal_moves:
-            return self._soft_match(cleaned_text, parser_input.legal_moves)
+            result = self._soft_match(cleaned_text, parser_input.legal_moves)
+            if result:
+                method_used = "soft_match"
 
-        return None
+        # Log performance metrics
+        if self._config.enable_performance_logging:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            logging.info(
+                "Parse completed: method=%s, time=%.2fms, input_size=%d, success=%s",
+                method_used, elapsed_ms, len(text), result is not None
+            )
+
+        return result
 
     def _try_parse_json(self, text: str) -> Optional[str]:
         """Try to parse JSON from text and convert to canonical action string.
@@ -171,7 +260,7 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
             Canonical action string if JSON parsing succeeds, None otherwise
         """
         # Security: Check input size before regex processing
-        if len(text) > MAX_INPUT_SIZE:
+        if len(text) > self._config.max_input_size:
             return None
 
         # Look for JSON-like patterns in the text (with size limits)
@@ -181,14 +270,25 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
         ]
 
         for pattern in json_patterns:
-            json_matches = re.findall(pattern, text, re.DOTALL)
-            for json_match in json_matches:
-                try:
-                    # Try to parse JSON and convert to FreeCivAction
-                    action = FreeCivAction.from_json(json_match)
-                    return self._action_to_canonical_string(action)
-                except (json.JSONDecodeError, ValueError, TypeError):
-                    continue  # Try next JSON match
+            try:
+                json_matches = self._protected_regex.findall(pattern, text, re.DOTALL)
+                for json_match in json_matches:
+                    try:
+                        # Try to parse JSON and convert to FreeCivAction
+                        action = FreeCivAction.from_json(json_match)
+                        return self._action_to_canonical_string(action)
+                    except json.JSONDecodeError as e:
+                        if self._config.enable_debug_logging:
+                            logging.debug("JSON decode error in pattern match: %s", e)
+                        continue  # Try next JSON match
+                    except (ValueError, TypeError) as e:
+                        if self._config.enable_debug_logging:
+                            logging.debug("Value/Type error in JSON action creation: %s", e)
+                        continue  # Try next JSON match
+            except Exception as e:
+                if self._config.enable_debug_logging:
+                    logging.debug("Regex timeout or error in JSON parsing: %s", e)
+                continue  # Try next pattern
 
         return None
 
@@ -215,8 +315,10 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
                 return self._action_to_canonical_string(action)
 
             return None
-        except Exception:
+        except Exception as e:
             # If natural language parsing fails, return None to try other methods
+            if self._config.enable_debug_logging:
+                logging.debug("Natural language parsing failed: %s", e)
             return None
 
     def _create_stub_game_state(self) -> FreeCivGameStateStub:
@@ -398,11 +500,18 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
 class FreeCivSoftParser(parsers.SoftMoveParser):
     """Soft parser for FreeCiv actions using enhanced fuzzy matching."""
 
-    def __init__(self):
-        """Initialize FreeCiv soft parser with caching."""
+    def __init__(self, config: Optional[FreeCivParserConfig] = None):
+        """Initialize FreeCiv soft parser with caching.
+
+        Args:
+          config: Parser configuration, uses default if None
+        """
         super().__init__("freeciv")
-        self._similarity_cache = {}  # Cache for similarity calculations
-        self._max_cache_size = 1000
+        self._config = config or DEFAULT_CONFIG
+        self._similarity_cache = LRUCache[str, float](
+            max_size=self._config.max_cache_size,
+            ttl_seconds=300.0  # 5 minute TTL
+        )
         self._legal_moves_hash = None  # Track when legal moves change
 
     def parse(self, parser_input: parsers.TextParserInput) -> Optional[str]:
@@ -422,11 +531,15 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
         if self._legal_moves_hash != current_moves_hash:
             self._similarity_cache.clear()
             self._legal_moves_hash = current_moves_hash
+            if self._config.enable_debug_logging:
+                logging.debug("Cache cleared due to legal moves change")
 
         text = parser_input.text.strip().lower()
 
         # Security: Validate input size
-        if len(text) > MAX_INPUT_SIZE:
+        if len(text) > self._config.max_input_size:
+            if self._config.enable_debug_logging:
+                logging.debug("Input size %d exceeds maximum %d", len(text), self._config.max_input_size)
             return None
 
         # Remove common noise words and formatting
@@ -454,9 +567,14 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
                 best_match = move
 
         # Return match if confidence is high enough
-        if best_score > SIMILARITY_THRESHOLD:
+        if best_score > self._config.similarity_threshold:
+            if self._config.enable_debug_logging:
+                logging.debug("Found match '%s' with score %.3f", best_match, best_score)
             return best_match
 
+        if self._config.enable_debug_logging:
+            logging.debug("No match found, best score %.3f below threshold %.3f",
+                         best_score, self._config.similarity_threshold)
         return None
 
     def _calculate_similarity_cached(self, text: str, move: str) -> float:
@@ -469,22 +587,24 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
         Returns:
             Cached similarity score between 0 and 1
         """
-        cache_key = (text, move)
+        cache_key = f"{text}|{move}"
 
         # Check cache first
-        if cache_key in self._similarity_cache:
-            return self._similarity_cache[cache_key]
+        cached_result = self._similarity_cache.get(cache_key)
+        if cached_result is not None:
+            if self._config.enable_performance_logging:
+                logging.debug("Cache hit for similarity calculation")
+            return cached_result
 
         # Calculate similarity
         similarity = self._calculate_enhanced_similarity(text, move)
 
-        # Cache result (with size limit)
-        if len(self._similarity_cache) >= self._max_cache_size:
-            # Remove oldest entries (simple FIFO)
-            oldest_key = next(iter(self._similarity_cache))
-            del self._similarity_cache[oldest_key]
+        # Cache result
+        self._similarity_cache.set(cache_key, similarity)
 
-        self._similarity_cache[cache_key] = similarity
+        if self._config.enable_performance_logging:
+            logging.debug("Calculated similarity %.3f for '%s' vs '%s'", similarity, text, move)
+
         return similarity
 
     def _hash_legal_moves(self, legal_moves: List[str]) -> str:
@@ -501,8 +621,19 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
 
     def invalidate_cache(self) -> None:
         """Manually invalidate the similarity cache."""
+        old_stats = self._similarity_cache.statistics
         self._similarity_cache.clear()
         self._legal_moves_hash = None
+        if self._config.enable_debug_logging:
+            logging.debug("Cache invalidated manually. Previous stats: %s", old_stats)
+
+    def get_cache_statistics(self) -> dict[str, Any]:
+        """Get current cache statistics for monitoring.
+
+        Returns:
+            Dictionary with cache performance metrics
+        """
+        return self._similarity_cache.statistics
 
     def _calculate_enhanced_similarity(self, text: str, move: str) -> float:
         """Enhanced similarity calculation with multiple algorithms.
@@ -511,15 +642,15 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
         fuzzy matching between user input and legal moves. The algorithm
         uses weighted scoring across different dimensions:
 
-        1. Token similarity (40%): Overlap of words/tokens
-        2. Number similarity (30%): Overlap of numeric IDs
-        3. Action similarity (20%): Overlap of action keywords
-        4. Edit distance (10%): Character-level similarity
+        1. Token similarity: Overlap of words/tokens
+        2. Number similarity: Overlap of numeric IDs
+        3. Action similarity: Overlap of action keywords
+        4. Edit distance: Character-level similarity
 
         Additional bonuses are applied for:
-        - Exact substring matches (+0.15)
-        - Partial token matches (+0.05)
-        - Action type matches (+0.10)
+        - Exact substring matches
+        - Partial token matches
+        - Action type matches
 
         Args:
             text: Cleaned input text from user
@@ -528,24 +659,32 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
         Returns:
             Similarity score between 0.0 and 1.0, where:
             - 0.0: No similarity
-            - 0.3: Minimum threshold for matching
+            - 0.3: Minimum threshold for matching (configurable)
             - 0.6+: High confidence match
             - 1.0: Perfect match
 
         Examples:
-            >>> parser = FreeCivSoftParser()
+            >>> config = FreeCivParserConfig()
+            >>> parser = FreeCivSoftParser(config)
             >>> score = parser._calculate_enhanced_similarity(
             ...     "move settlers 101",
             ...     "unit_move_settlers(101)_to(2,3)"
             ... )
-            >>> score > 0.6  # High confidence
+            >>> score > 0.6  # High confidence due to token + number match
             True
 
             >>> score = parser._calculate_enhanced_similarity(
             ...     "attack warriors",
             ...     "unit_attack_warriors(102)_target(203)"
             ... )
-            >>> score > 0.3  # Above threshold
+            >>> score > 0.3  # Above threshold due to action + token match
+            True
+
+            >>> score = parser._calculate_enhanced_similarity(
+            ...     "fortfy unit",  # typo
+            ...     "unit_fortify_legion(105)"
+            ... )
+            >>> score > 0.2  # Edit distance helps with typos
             True
         """
         # Calculate individual similarity components
@@ -557,13 +696,13 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
         # Build weighted similarity list
         similarities = []
         if token_similarity > 0:
-            similarities.append(("token", token_similarity, TOKEN_WEIGHT))
+            similarities.append(("token", token_similarity, self._config.token_weight))
         if number_similarity > 0:
-            similarities.append(("number", number_similarity, NUMBER_WEIGHT))
+            similarities.append(("number", number_similarity, self._config.number_weight))
         if action_similarity > 0:
-            similarities.append(("action", action_similarity, ACTION_WEIGHT))
+            similarities.append(("action", action_similarity, self._config.action_weight))
 
-        similarities.append(("edit", edit_similarity, EDIT_WEIGHT))
+        similarities.append(("edit", edit_similarity, self._config.edit_weight))
 
         # Calculate weighted average
         if similarities:
@@ -667,17 +806,17 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
 
         # Exact substring match bonus
         if text in move or move in text:
-            bonus += EXACT_SUBSTRING_BONUS
+            bonus += self._config.exact_substring_bonus
 
         # Partial substring matches for longer tokens
         for token in text_tokens:
-            if len(token) > 3 and token in move:
-                bonus += PARTIAL_TOKEN_BONUS
+            if len(token) > self._config.min_token_length_for_bonus and token in move:
+                bonus += self._config.partial_token_bonus
                 break
 
         # Action type exact match bonus
         if text_actions & move_actions:
-            bonus += ACTION_MATCH_BONUS
+            bonus += self._config.action_match_bonus
 
         return bonus
 
@@ -753,9 +892,10 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
             Edit distance between the strings
         """
         # Use separate cache key prefix to distinguish from similarity cache
-        cache_key = ("edit", s1, s2)
-        if cache_key in self._similarity_cache:
-            return self._similarity_cache[cache_key]
+        cache_key = f"edit|{s1}|{s2}"
+        cached_result = self._similarity_cache.get(cache_key)
+        if cached_result is not None:
+            return cached_result
 
         # Ensure s1 is the longer string
         if len(s1) < len(s2):
@@ -775,32 +915,42 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
                 previous_row = current_row
             result = previous_row[-1]
 
-        # Cache the result with size limit management
-        if len(self._similarity_cache) >= self._max_cache_size:
-            # Remove oldest entries (simple FIFO)
-            oldest_key = next(iter(self._similarity_cache))
-            del self._similarity_cache[oldest_key]
-
-        self._similarity_cache[cache_key] = result
+        # Cache the result using LRU cache
+        self._similarity_cache.set(cache_key, result)
         return result
 
 
-def create_freeciv_parser_chain(model=None) -> parsers.ChainedMoveParser:
+def create_freeciv_parser_chain(
+    model=None, config: Optional[FreeCivParserConfig] = None
+) -> parsers.ChainedMoveParser:
     """Create a chained parser for FreeCiv actions.
 
     Args:
         model: Optional LLM model for natural language parsing
+        config: Parser configuration, uses default if None
 
     Returns:
         ChainedMoveParser configured for FreeCiv with appropriate parsers
+
+    Examples:
+        >>> # Basic chain with default config
+        >>> chain = create_freeciv_parser_chain()
+
+        >>> # Chain with custom config
+        >>> config = FreeCivParserConfig(max_cache_size=500)
+        >>> chain = create_freeciv_parser_chain(config=config)
+
+        >>> # Chain with LLM and custom config
+        >>> chain = create_freeciv_parser_chain(model=my_model, config=config)
     """
-    parser_list = [FreeCivRuleBasedParser()]
+    effective_config = config or DEFAULT_CONFIG
+    parser_list = [FreeCivRuleBasedParser(effective_config)]
 
     # Add LLM parser if model is provided
     if model is not None:
         parser_list.append(FreeCivLLMParser(model))
 
     # Always add soft parser as fallback
-    parser_list.append(FreeCivSoftParser())
+    parser_list.append(FreeCivSoftParser(effective_config))
 
     return parsers.ChainedMoveParser(parser_list)
