@@ -270,20 +270,19 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
             )
             return f"tech_research_player({action.actor_id})_target({target_value})"
 
-        else:
-            # Generic format
-            target_str = ""
-            if action.target:
-                if "x" in action.target and "y" in action.target:
-                    target_str = f"_to({action.target['x']},{action.target['y']})"
-                elif "id" in action.target:
-                    target_str = f"_target({action.target['id']})"
-                elif "value" in action.target:
-                    target_str = f"_target({action.target['value']})"
+        # Generic format
+        target_str = ""
+        if action.target:
+            if "x" in action.target and "y" in action.target:
+                target_str = f"_to({action.target['x']},{action.target['y']})"
+            elif "id" in action.target:
+                target_str = f"_target({action.target['id']})"
+            elif "value" in action.target:
+                target_str = f"_target({action.target['value']})"
 
-            return (
-                f"{action.action_type}_{action.source}({action.actor_id}){target_str}"
-            )
+        return (
+            f"{action.action_type}_{action.source}({action.actor_id}){target_str}"
+        )
 
     def _clean_text(self, text: str) -> str:
         """Clean text to extract action string.

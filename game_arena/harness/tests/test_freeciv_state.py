@@ -11,20 +11,15 @@ try:
 except ImportError:
     pyspiel = None
 
-from game_arena.harness.freeciv_state import (
-    MAX_STATE_SIZE_BYTES,
-    MAX_PLAYER_ID,
-    MAX_UNIT_ID,
-    MAX_CITY_ID,
-    FreeCivAction,
-    FreeCivState,
-    LRUCache,
-    _FallbackGameState,
-    _GameStateBase,
-    _calculate_deep_size,
-    _validate_state_size,
-    _PY_SPIEL_DUMMY_GAME,
-)
+from game_arena.harness.freeciv_state import (_PY_SPIEL_DUMMY_GAME,
+                                              MAX_CITY_ID, MAX_PLAYER_ID,
+                                              MAX_STATE_SIZE_BYTES,
+                                              MAX_UNIT_ID, FreeCivAction,
+                                              FreeCivState, LRUCache,
+                                              _calculate_deep_size,
+                                              _FallbackGameState,
+                                              _GameStateBase,
+                                              _validate_state_size)
 
 
 class TestFreeCivState(unittest.TestCase):
@@ -420,9 +415,7 @@ class TestFreeCivState(unittest.TestCase):
             source="unit",
         )
         state.apply_action(load_action)
-        self.assertIn(
-            cargo_unit.unit_id, state.units[transport_unit.unit_id].cargo_ids
-        )
+        self.assertIn(cargo_unit.unit_id, state.units[transport_unit.unit_id].cargo_ids)
         self.assertEqual(
             state.units[cargo_unit.unit_id].transport_id, transport_unit.unit_id
         )
@@ -455,7 +448,9 @@ class TestFreeCivState(unittest.TestCase):
     def test_validate_state_size_guard(self):
         """Large inputs trip the state size protection before parsing."""
         large_payload = "x" * 6000
-        oversized_state = {"tiles": [{"payload": f"{large_payload}_{i}"} for i in range(2000)]}
+        oversized_state = {
+            "tiles": [{"payload": f"{large_payload}_{i}"} for i in range(2000)]
+        }
         self.assertGreater(
             len(oversized_state["tiles"]) * len(large_payload), MAX_STATE_SIZE_BYTES
         )
@@ -556,11 +551,7 @@ class TestFreeCivState(unittest.TestCase):
     def test_freeciv_action_json_parsing(self):
         """Test FreeCivAction.from_json() method with various JSON formats."""
         # Test basic JSON format
-        json_data = {
-            "action": "unit_move",
-            "unit": 101,
-            "to": [3, 5]
-        }
+        json_data = {"action": "unit_move", "unit": 101, "to": [3, 5]}
         action = FreeCivAction.from_json(json_data)
         self.assertEqual(action.action_type, "unit_move")
         self.assertEqual(action.actor_id, 101)
@@ -571,7 +562,7 @@ class TestFreeCivState(unittest.TestCase):
         json_data2 = {
             "type": "city_production",
             "city": 301,
-            "target": {"value": "warriors"}
+            "target": {"value": "warriors"},
         }
         action2 = FreeCivAction.from_json(json_data2)
         self.assertEqual(action2.action_type, "city_production")
@@ -619,7 +610,7 @@ class TestFreeCivState(unittest.TestCase):
             action_type="unit_move",
             actor_id=101,
             target={"x": 3, "y": 5},
-            source="unit"
+            source="unit",
         )
         packet = action.to_packet()
         self.assertEqual(packet["pid"], 31)  # PACKET_UNIT_ORDERS
@@ -632,7 +623,7 @@ class TestFreeCivState(unittest.TestCase):
             action_type="city_production",
             actor_id=301,
             target={"value": "warriors"},
-            source="city"
+            source="city",
         )
         packet2 = action2.to_packet()
         self.assertEqual(packet2["pid"], 63)  # PACKET_CITY_CHANGE
@@ -644,7 +635,7 @@ class TestFreeCivState(unittest.TestCase):
             action_type="tech_research",
             actor_id=1,
             target={"value": "pottery"},
-            source="player"
+            source="player",
         )
         packet3 = action3.to_packet()
         self.assertEqual(packet3["pid"], 87)  # PACKET_PLAYER_RESEARCH
@@ -658,16 +649,14 @@ class TestFreeCivState(unittest.TestCase):
             action_type="unit_move",
             actor_id=101,
             target={"x": 3, "y": 5},
-            source="unit"
+            source="unit",
         )
         self.assertEqual(action.action_type, "unit_move")
 
         # Test invalid action type (use one that doesn't start with test_, invalid_, or unsupported_)
         with self.assertRaises(ValidationError):
             FreeCivAction(
-                action_type="completely_unknown_action",
-                actor_id=101,
-                source="unit"
+                action_type="completely_unknown_action", actor_id=101, source="unit"
             )
 
         # Test invalid target for unit move
@@ -676,15 +665,13 @@ class TestFreeCivState(unittest.TestCase):
                 action_type="unit_move",
                 actor_id=101,
                 target={"invalid": "target"},
-                source="unit"
+                source="unit",
             )
 
         # Test invalid source
         with self.assertRaises(ValidationError):
             FreeCivAction(
-                action_type="unit_move",
-                actor_id=101,
-                source="invalid_source"
+                action_type="unit_move", actor_id=101, source="invalid_source"
             )
 
     def test_freeciv_action_to_natural_language(self):
@@ -694,7 +681,7 @@ class TestFreeCivState(unittest.TestCase):
             action_type="unit_move",
             actor_id=101,
             target={"x": 3, "y": 5},
-            source="unit"
+            source="unit",
         )
         nl = action.to_natural_language()
         self.assertIn("101", nl)
@@ -706,7 +693,7 @@ class TestFreeCivState(unittest.TestCase):
             action_type="city_production",
             actor_id=301,
             target={"value": "warriors"},
-            source="city"
+            source="city",
         )
         nl2 = action2.to_natural_language()
         self.assertIn("301", nl2)
@@ -725,8 +712,12 @@ class TestFreeCivState(unittest.TestCase):
         self.assertLessEqual(len(prioritized), 10)
 
         # Should be subset of all legal actions
-        prioritized_set = {(a.action_type, a.actor_id, str(a.target)) for a in prioritized}
-        all_actions_set = {(a.action_type, a.actor_id, str(a.target)) for a in all_actions}
+        prioritized_set = {
+            (a.action_type, a.actor_id, str(a.target)) for a in prioritized
+        }
+        all_actions_set = {
+            (a.action_type, a.actor_id, str(a.target)) for a in all_actions
+        }
         self.assertTrue(prioritized_set.issubset(all_actions_set))
 
         # All prioritized actions should have strategic scores
@@ -747,16 +738,14 @@ class TestFreeCivState(unittest.TestCase):
 
         # Create test actions
         city_build_action = FreeCivAction(
-            action_type="unit_build_city",
-            actor_id=101,
-            source="unit"
+            action_type="unit_build_city", actor_id=101, source="unit"
         )
 
         move_action = FreeCivAction(
             action_type="unit_move",
             actor_id=101,
             target={"x": 2, "y": 3},
-            source="unit"
+            source="unit",
         )
 
         # Test scoring
@@ -782,7 +771,7 @@ class TestFreeCivState(unittest.TestCase):
                 action_type="unit_move",
                 actor_id=101 + i,
                 target={"x": i, "y": i},
-                source="unit"
+                source="unit",
             )
             action.strategic_score = 10.0 - i  # Decreasing scores
             actions.append((action.strategic_score, action))
@@ -824,7 +813,9 @@ class TestFreeCivState(unittest.TestCase):
         end_time = time.perf_counter()
 
         avg_time_ms = ((end_time - start_time) / 10) * 1000
-        self.assertLess(avg_time_ms, 50, f"Action prioritization took {avg_time_ms:.2f}ms")
+        self.assertLess(
+            avg_time_ms, 50, f"Action prioritization took {avg_time_ms:.2f}ms"
+        )
 
     def test_comprehensive_performance_benchmarks(self):
         """Comprehensive performance benchmarks for all parsing methods."""
@@ -836,7 +827,7 @@ class TestFreeCivState(unittest.TestCase):
             action_type="unit_move",
             actor_id=101,
             target={"x": 3, "y": 5},
-            source="unit"
+            source="unit",
         )
 
         start_time = time.perf_counter()
@@ -858,7 +849,9 @@ class TestFreeCivState(unittest.TestCase):
         end_time = time.perf_counter()
 
         avg_time_ms = ((end_time - start_time) / 100) * 1000
-        self.assertLess(avg_time_ms, 10, f"Natural language parsing took {avg_time_ms:.2f}ms")
+        self.assertLess(
+            avg_time_ms, 10, f"Natural language parsing took {avg_time_ms:.2f}ms"
+        )
 
         # Test validation performance
         start_time = time.perf_counter()
@@ -867,7 +860,7 @@ class TestFreeCivState(unittest.TestCase):
                 action_type="unit_move",
                 actor_id=101,
                 target={"x": 3, "y": 5},
-                source="unit"
+                source="unit",
             )
         end_time = time.perf_counter()
 
@@ -882,7 +875,7 @@ class TestFreeCivState(unittest.TestCase):
             action_type="unit_move",
             actor_id=101,
             target={"x": 2, "y": 3},
-            source="unit"
+            source="unit",
         )
 
         start_time = time.perf_counter()
@@ -905,12 +898,14 @@ class TestFreeCivState(unittest.TestCase):
         if len(all_actions) < 50:
             # Create additional test actions for load testing
             for i in range(50):
-                all_actions.append(FreeCivAction(
-                    action_type="unit_move",
-                    actor_id=101 + i,
-                    target={"x": i % 10, "y": (i // 10) % 10},
-                    source="unit"
-                ))
+                all_actions.append(
+                    FreeCivAction(
+                        action_type="unit_move",
+                        actor_id=101 + i,
+                        target={"x": i % 10, "y": (i // 10) % 10},
+                        source="unit",
+                    )
+                )
 
         # Test action space reduction under load
         start_time = time.perf_counter()
@@ -918,7 +913,11 @@ class TestFreeCivState(unittest.TestCase):
         end_time = time.perf_counter()
 
         processing_time_ms = (end_time - start_time) * 1000
-        self.assertLess(processing_time_ms, 100, f"Action space reduction took {processing_time_ms:.2f}ms")
+        self.assertLess(
+            processing_time_ms,
+            100,
+            f"Action space reduction took {processing_time_ms:.2f}ms",
+        )
         self.assertLessEqual(len(prioritized), 20)
 
         # Test bulk JSON parsing
@@ -936,7 +935,11 @@ class TestFreeCivState(unittest.TestCase):
 
         total_time_ms = (end_time - start_time) * 1000
         avg_time_ms = total_time_ms / len(json_samples)
-        self.assertLess(avg_time_ms, 10, f"Bulk JSON parsing averaged {avg_time_ms:.2f}ms per action")
+        self.assertLess(
+            avg_time_ms,
+            10,
+            f"Bulk JSON parsing averaged {avg_time_ms:.2f}ms per action",
+        )
 
     def test_lru_cache_functionality(self):
         """Test LRU cache implementation."""
@@ -993,7 +996,7 @@ class TestFreeCivState(unittest.TestCase):
             action_type="unit_move",
             actor_id=MAX_UNIT_ID,
             target={"x": 0, "y": 0},
-            source="unit"
+            source="unit",
         )
         self.assertEqual(action.actor_id, MAX_UNIT_ID)
 
@@ -1004,7 +1007,7 @@ class TestFreeCivState(unittest.TestCase):
                 action_type="unit_move",
                 actor_id=-1,  # Negative ID should fail validation
                 target={"x": 0, "y": 0},
-                source="unit"
+                source="unit",
             )
 
     def test_fallback_game_state_coverage(self):
@@ -1035,7 +1038,9 @@ class TestFreeCivState(unittest.TestCase):
             FreeCivAction.from_json(invalid_json)
 
         # Test extremely nested JSON to trigger depth protection
-        deeply_nested = {"a": {"b": {"c": {"d": {"e": {"f": {"g": {"h": {"i": {"j": "deep"}}}}}}}}}}
+        deeply_nested = {
+            "a": {"b": {"c": {"d": {"e": {"f": {"g": {"h": {"i": {"j": "deep"}}}}}}}}}
+        }
         try:
             action = FreeCivAction.from_json(json.dumps(deeply_nested))
         except ValueError:

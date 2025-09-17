@@ -15,8 +15,7 @@
 """Configuration for FreeCiv games and testing."""
 
 import os
-from typing import Dict, Any
-
+from typing import Any, Dict
 
 # FreeCiv Server Connection Settings
 FREECIV_SERVER_CONFIG = {
@@ -154,13 +153,15 @@ def get_test_game_config() -> Dict[str, Any]:
         Test-optimized game configuration
     """
     test_config = get_config("game").copy()
-    test_config.update({
-        "map_size": "tiny",  # Smallest map for faster testing
-        "turn_limit": 50,    # Shorter games for testing
-        "barbarians": "disabled",
-        "fog_of_war": False,  # Full visibility for debugging
-        "debug_mode": True,
-    })
+    test_config.update(
+        {
+            "map_size": "tiny",  # Smallest map for faster testing
+            "turn_limit": 50,  # Shorter games for testing
+            "barbarians": "disabled",
+            "fog_of_war": False,  # Full visibility for debugging
+            "debug_mode": True,
+        }
+    )
 
     return test_config
 
@@ -172,16 +173,20 @@ def get_demo_config() -> Dict[str, Any]:
         Demo-optimized configuration
     """
     demo_config = get_config().copy()
-    demo_config["game"].update({
-        "map_size": "small",
-        "turn_limit": 100,
-        "victory_conditions": ["conquest"],
-    })
+    demo_config["game"].update(
+        {
+            "map_size": "small",
+            "turn_limit": 100,
+            "victory_conditions": ["conquest"],
+        }
+    )
 
-    demo_config["test"].update({
-        "max_moves_per_test": 20,
-        "enable_debug_output": True,
-    })
+    demo_config["test"].update(
+        {
+            "max_moves_per_test": 20,
+            "enable_debug_output": True,
+        }
+    )
 
     return demo_config
 

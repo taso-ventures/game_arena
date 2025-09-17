@@ -40,7 +40,7 @@ class FreeCivClient:
             ws_url: WebSocket URL of FreeCiv3D server (e.g., ws://localhost:4002)
             timeout: Request timeout in seconds
         """
-        self.server_url = server_url.rstrip('/')
+        self.server_url = server_url.rstrip("/")
         self.ws_url = ws_url
         self.timeout = timeout
         self.websocket: Optional[websockets.WebSocketServerProtocol] = None
@@ -54,7 +54,9 @@ class FreeCivClient:
             # First, try to get server status
             response = requests.get(f"{self.server_url}/status", timeout=self.timeout)
             if response.status_code != 200:
-                raise ConnectionError(f"FreeCiv server not responding: {response.status_code}")
+                raise ConnectionError(
+                    f"FreeCiv server not responding: {response.status_code}"
+                )
 
             # Try to create or join a game
             self._setup_game()
@@ -63,7 +65,9 @@ class FreeCivClient:
             self._connect_websocket()
 
             self.connected = True
-            logger.info(f"Connected to FreeCiv3D server, game_id: {self.game_id}, player_id: {self.player_id}")
+            logger.info(
+                f"Connected to FreeCiv3D server, game_id: {self.game_id}, player_id: {self.player_id}"
+            )
 
         except Exception as e:
             logger.error(f"Failed to connect to FreeCiv server: {e}")
@@ -77,12 +81,12 @@ class FreeCivClient:
                 "action": "new",
                 "type": "multiplayer",
                 "ruleset": "classic",
-                "map_size": "small"
+                "map_size": "small",
             }
             response = requests.post(
                 f"{self.server_url}/civclientlauncher",
                 data=create_data,
-                timeout=self.timeout
+                timeout=self.timeout,
             )
 
             if response.status_code == 200:
@@ -115,10 +119,7 @@ class FreeCivClient:
     async def _async_connect_websocket(self) -> None:
         """Async WebSocket connection."""
         try:
-            self.websocket = await websockets.connect(
-                self.ws_url,
-                timeout=self.timeout
-            )
+            self.websocket = await websockets.connect(self.ws_url, timeout=self.timeout)
             logger.info("WebSocket connected successfully")
         except Exception as e:
             logger.warning(f"WebSocket connection failed, continuing in HTTP mode: {e}")
@@ -165,7 +166,7 @@ class FreeCivClient:
         state_request = {
             "type": "state_query",
             "game_id": self.game_id,
-            "player_id": self.player_id
+            "player_id": self.player_id,
         }
 
         await self.websocket.send(json.dumps(state_request))
@@ -197,18 +198,31 @@ class FreeCivClient:
                 "phase": "movement",
                 "current_player": self.player_id,
                 "is_over": False,
-                "scores": {str(self.player_id): 0, "2": 0}
+                "scores": {str(self.player_id): 0, "2": 0},
             },
             "map": {
                 "width": 6,
                 "height": 4,
                 "tiles": [
-                    {"x": i, "y": j, "terrain": "grassland", "resource": None,
-                     "city_id": None, "unit_ids": [], "improvements": [],
-                     "pollution": False, "fallout": False, "owner": None, "worked_by": None}
-                    for i in range(6) for j in range(4)
+                    {
+                        "x": i,
+                        "y": j,
+                        "terrain": "grassland",
+                        "resource": None,
+                        "city_id": None,
+                        "unit_ids": [],
+                        "improvements": [],
+                        "pollution": False,
+                        "fallout": False,
+                        "owner": None,
+                        "worked_by": None,
+                    }
+                    for i in range(6)
+                    for j in range(4)
                 ],
-                "visibility": {str(self.player_id): [[i, j] for i in range(6) for j in range(4)]}
+                "visibility": {
+                    str(self.player_id): [[i, j] for i in range(6) for j in range(4)]
+                },
             },
             "players": [
                 {
@@ -226,7 +240,7 @@ class FreeCivClient:
                     "trade_routes": [],
                     "luxuries_rate": 0,
                     "science_rate": 50,
-                    "tax_rate": 50
+                    "tax_rate": 50,
                 }
             ],
             "units": [
@@ -244,22 +258,22 @@ class FreeCivClient:
                         {
                             "type": "unit_move",
                             "target": {"x": 2, "y": 1},
-                            "parameters": {}
+                            "parameters": {},
                         },
                         {
                             "type": "unit_move",
                             "target": {"x": 1, "y": 2},
-                            "parameters": {}
-                        }
+                            "parameters": {},
+                        },
                     ],
                     "fortified": False,
                     "activity": None,
                     "fuel": -1,
                     "transport_id": None,
-                    "cargo_ids": []
+                    "cargo_ids": [],
                 }
             ],
-            "cities": []
+            "cities": [],
         }
 
     def submit_action(self, action: FreeCivAction) -> bool:
@@ -292,7 +306,9 @@ class FreeCivClient:
 
         try:
             loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self._async_submit_action_via_websocket(action))
+            return loop.run_until_complete(
+                self._async_submit_action_via_websocket(action)
+            )
         except Exception as e:
             logger.error(f"WebSocket action submission failed: {e}")
             return False
@@ -306,7 +322,7 @@ class FreeCivClient:
             "type": "action",
             "game_id": self.game_id,
             "player_id": self.player_id,
-            "data": action.to_packet()
+            "data": action.to_packet(),
         }
 
         await self.websocket.send(json.dumps(action_request))
@@ -318,10 +334,7 @@ class FreeCivClient:
         """Submit action via HTTP API."""
         try:
             url = f"{self.server_url}/api/game/{self.game_id}/action"
-            data = {
-                "player_id": self.player_id,
-                "action": action.to_packet()
-            }
+            data = {"player_id": self.player_id, "action": action.to_packet()}
             response = requests.post(url, json=data, timeout=self.timeout)
             return response.status_code == 200
 

@@ -18,7 +18,7 @@ This module provides lightweight stub implementations that replace the use
 of Mock objects in production code for natural language parsing.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class FreeCivUnitStub:
@@ -62,15 +62,15 @@ class FreeCivGameStateStub:
             city_name = city_names[(i - 301) % len(city_names)]
             self.cities[i] = FreeCivCityStub(i, city_name)
 
-    def get_unit_by_id(self, unit_id: int) -> FreeCivUnitStub | None:
+    def get_unit_by_id(self, unit_id: int) -> Optional[FreeCivUnitStub]:
         """Get unit by ID if it exists."""
         return self.units.get(unit_id)
 
-    def get_city_by_id(self, city_id: int) -> FreeCivCityStub | None:
+    def get_city_by_id(self, city_id: int) -> Optional[FreeCivCityStub]:
         """Get city by ID if it exists."""
         return self.cities.get(city_id)
 
-    def get_unit_by_name(self, name: str) -> FreeCivUnitStub | None:
+    def get_unit_by_name(self, name: str) -> Optional[FreeCivUnitStub]:
         """Get first unit matching the given type name."""
         name_lower = name.lower()
         for unit in self.units.values():
@@ -78,7 +78,7 @@ class FreeCivGameStateStub:
                 return unit
         return None
 
-    def get_city_by_name(self, name: str) -> FreeCivCityStub | None:
+    def get_city_by_name(self, name: str) -> Optional[FreeCivCityStub]:
         """Get first city matching the given name."""
         name_lower = name.lower()
         for city in self.cities.values():
