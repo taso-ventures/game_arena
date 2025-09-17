@@ -30,3 +30,4 @@ docs/api
 AGENTS.md
 CLAUDE.md
 Technical Spec.md
+.cursor/rules/pr-comments.mdc
