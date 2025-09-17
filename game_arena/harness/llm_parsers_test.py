@@ -14,55 +14,53 @@
 
 """Tests for LLM-based parsers."""
 
-from absl.testing import absltest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
+
 from game_arena.harness import llm_parsers
 
 
 class LlmParsersTest(parameterized.TestCase):
 
-  @parameterized.named_parameters(
-      (
-          'simple_case',
-          'Clean Move: e4',
-          'Clean Move: ',
-          'e4',
-      ),
-      (
-          'trailing_whitespace',
-          'Clean Move: e4  ',
-          'Clean Move: ',
-          'e4',
-      ),
-      (
-          'leading_whitespace',
-          '  Clean Move: e4',
-          'Clean Move: ',
-          'e4',
-      ),
-      (
-          'multiline',
-          'Clean Move: e4\nSome other text',
-          'Clean Move: ',
-          'e4',
-      ),
-      (
-          'special_characters',
-          'Clean Move: a+b#c',
-          'Clean Move: ',
-          'a+b#c',
-      ),
-  )
-  def test_parse_extractor_response(
-      self, response, final_answer_prefix, expected
-  ):
-    self.assertEqual(
-        llm_parsers._parse_extractor_response(
-            response=response, final_answer_prefix=final_answer_prefix
+    @parameterized.named_parameters(
+        (
+            "simple_case",
+            "Clean Move: e4",
+            "Clean Move: ",
+            "e4",
         ),
-        expected,
+        (
+            "trailing_whitespace",
+            "Clean Move: e4  ",
+            "Clean Move: ",
+            "e4",
+        ),
+        (
+            "leading_whitespace",
+            "  Clean Move: e4",
+            "Clean Move: ",
+            "e4",
+        ),
+        (
+            "multiline",
+            "Clean Move: e4\nSome other text",
+            "Clean Move: ",
+            "e4",
+        ),
+        (
+            "special_characters",
+            "Clean Move: a+b#c",
+            "Clean Move: ",
+            "a+b#c",
+        ),
     )
+    def test_parse_extractor_response(self, response, final_answer_prefix, expected):
+        self.assertEqual(
+            llm_parsers._parse_extractor_response(
+                response=response, final_answer_prefix=final_answer_prefix
+            ),
+            expected,
+        )
 
 
-if __name__ == '__main__':
-  absltest.main()
+if __name__ == "__main__":
+    absltest.main()

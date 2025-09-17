@@ -36,9 +36,15 @@ python3 -m pip install --editable game_arena
 python3 -m pip install game_arena
 ```
 
-### 3. Run a Demo Chess Game
+### 3. Run Demo Games
 
-A chess-only demo of the harness components is in `harness/harness_demo.py`.
+Game Arena supports multiple game types:
+- **Chess**: Traditional chess using OpenSpiel
+- **Go**: Traditional Go using OpenSpiel
+- **FreeCiv**: Strategy civilization game using external FreeCiv3D server
+
+#### Chess Demo
+A chess demo of the harness components is in `harness/harness_demo.py`.
 
 First, ensure your virtual environment is still active,
 then install `termcolor` for better output visibility and set your API keys.
@@ -55,17 +61,70 @@ export OPENAI_API_KEY=yyy
 python3 -m game_arena.harness.harness_demo
 ```
 
-The visualization of the Chess board, the formatted prompts sent to the models,
+#### Unified Game Runner
+
+For easier testing across multiple game types, use the unified game runner:
+
+```bash
+# Run chess game
+python scripts/run_game.py chess --num_moves=5
+
+# Run FreeCiv game (requires FreeCiv3D server)
+python scripts/run_game.py freeciv --num_moves=10
+
+# Check setup for FreeCiv
+python scripts/run_game.py freeciv --check_setup
+```
+
+#### FreeCiv Setup
+
+FreeCiv requires an external FreeCiv3D server running on port 8080. From the adjacent `freeciv3d` repository:
+
+```bash
+cd ../freeciv3d
+docker-compose up
+```
+
+Then test the FreeCiv integration:
+
+```bash
+# Test connection to FreeCiv3D server
+python scripts/test_freeciv_connection.py
+
+# Run FreeCiv demo
+python -m game_arena.harness.freeciv_harness_demo
+```
+
+For detailed FreeCiv setup and testing instructions, see [TESTING_FREECIV.md](TESTING_FREECIV.md).
+
+#### Docker Support
+
+Use Docker for consistent development environment:
+
+```bash
+# Build and run Game Arena container
+docker-compose up
+
+# Run games inside container
+docker-compose exec game-arena python scripts/run_game.py chess
+```
+
+The visualization of the game board, the formatted prompts sent to the models,
 their responses, and the moves parsed from those responses will be printed.
 
 ## Components
 
 ### Game environment
 
+The harness supports multiple game environments:
+
+#### OpenSpiel Games
+
 The harness uses [OpenSpiel](https://github.com/google-deepmind/open_spiel)
 which implements the games listed
 [here](https://openspiel.readthedocs.io/en/latest/games.html). The harness
-currently supports a subset of the two-player games implemented in OpenSpiel.
+currently supports a subset of the two-player games implemented in OpenSpiel,
+including Chess and Go.
 
 The state of a game is tracked by OpenSpiel. When a model plays a move, it is
 given to OpenSpiel as an OpenSpiel action, and then OpenSpiel applies the move
@@ -74,6 +133,17 @@ to the game state.
 OpenSpiel also provides the game state in canonical notation e.g.
 Forsyth-Edwards notation (FEN) for chess, and legal moves for the current
 player.
+
+#### FreeCiv Integration
+
+For more complex strategy games, the harness integrates with external game servers.
+FreeCiv is supported through a FreeCivState adapter that connects to a FreeCiv3D
+server via WebSocket/HTTP.
+
+The FreeCivState adapter provides an OpenSpiel-compatible interface while
+communicating with the external FreeCiv server for game state management and
+move validation. This allows LLM agents to play complex civilization-building
+games with the same prompt generation and parsing infrastructure.
 
 ### Prompting
 

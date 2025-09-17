@@ -20,155 +20,147 @@ import dataclasses
 import random
 from typing import Any, Callable, Protocol, Sequence
 
-from game_arena.harness import model_generation
-from game_arena.harness import parsers
-from game_arena.harness import tournament_util
+from game_arena.harness import model_generation, parsers, tournament_util
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class SamplerOutput:
-  action: str | None
-  extracted_action: str | None
-  matched_action: str | None
-  generate_returns: Sequence[tournament_util.GenerateReturn]
-  # Auxiliary outputs may contain frequency, rethinking rule feedback, etc.
-  auxiliary_outputs: dict[str, Any]
-  # Not all samplers determine legality:
-  move_type: tournament_util.MoveType | None = None
+    action: str | None
+    extracted_action: str | None
+    matched_action: str | None
+    generate_returns: Sequence[tournament_util.GenerateReturn]
+    # Auxiliary outputs may contain frequency, rethinking rule feedback, etc.
+    auxiliary_outputs: dict[str, Any]
+    # Not all samplers determine legality:
+    move_type: tournament_util.MoveType | None = None
 
 
 class Sampler(Protocol):
-  """Generic sampler."""
+    """Generic sampler."""
 
-  def __init__(self, model: model_generation.Model):
-    self._model = model
+    def __init__(self, model: model_generation.Model):
+        self._model = model
 
-  def sample_action_with_text_input(
-      self, model_input: tournament_util.ModelTextInput
-  ) -> SamplerOutput:
-    ...
+    def sample_action_with_text_input(
+        self, model_input: tournament_util.ModelTextInput
+    ) -> SamplerOutput: ...
 
 
 class MultimodalSampler(Sampler, Protocol):
-  """Generic multimodal sampler."""
+    """Generic multimodal sampler."""
 
-  def sample_action_with_image_text_input(
-      self, model_input: tournament_util.ModelImageTextInput
-  ) -> SamplerOutput:
-    ...
+    def sample_action_with_image_text_input(
+        self, model_input: tournament_util.ModelImageTextInput
+    ) -> SamplerOutput: ...
 
 
 class MajorityVoteSampler(Sampler):
-  """Samples action by choosing the most common action from multiple samples.
+    """Samples action by choosing the most common action from multiple samples.
 
-  Majority voting across multiple samples is a way to enforce self-consistency
-  and reduce the illegal move rate. This implementation samples num_samples
-  from the model in parallel, parses each sample for action, and returns the
-  most common action. If multiple actions are tied for the most common, one is
-  randomly chosen.
-  """
+    Majority voting across multiple samples is a way to enforce self-consistency
+    and reduce the illegal move rate. This implementation samples num_samples
+    from the model in parallel, parses each sample for action, and returns the
+    most common action. If multiple actions are tied for the most common, one is
+    randomly chosen.
+    """
 
-  def __init__(
-      self,
-      model: model_generation.Model,
-      num_samples: int,
-      parser: parsers.TextParser,
-      max_workers: int = 10,
-  ):
-    super().__init__(model)
-    self._num_samples = num_samples
-    self._parser = parser
-    self._max_workers = max_workers
+    def __init__(
+        self,
+        model: model_generation.Model,
+        num_samples: int,
+        parser: parsers.TextParser,
+        max_workers: int = 10,
+    ):
+        super().__init__(model)
+        self._num_samples = num_samples
+        self._parser = parser
+        self._max_workers = max_workers
 
-  # TODO(Justin Chiu): _sample_action in base class should have signature typed
-  # to generic inputs:
-  def _sample_action(
-      self,
-      generate_fn: Callable[[Any], tournament_util.GenerateReturn],
-      model_input: Any,
-  ) -> SamplerOutput:
-    """Model type and input type agnostic majority voting sampler."""
-
-    def _generate_then_parse(
+    # TODO(Justin Chiu): _sample_action in base class should have signature typed
+    # to generic inputs:
+    def _sample_action(
+        self,
+        generate_fn: Callable[[Any], tournament_util.GenerateReturn],
         model_input: Any,
-    ) -> tuple[str | None, tournament_util.GenerateReturn]:
-      response = generate_fn(model_input)
-      return (
-          self._parser.parse(
-              parsers.TextParserInput(text=response.main_response)
-          ),
-          response,
-      )
+    ) -> SamplerOutput:
+        """Model type and input type agnostic majority voting sampler."""
 
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=self._max_workers
-    ) as executor:
-      futures = [
-          executor.submit(_generate_then_parse, model_input)
-          for _ in range(self._num_samples)
-      ]
+        def _generate_then_parse(
+            model_input: Any,
+        ) -> tuple[str | None, tournament_util.GenerateReturn]:
+            response = generate_fn(model_input)
+            return (
+                self._parser.parse(
+                    parsers.TextParserInput(text=response.main_response)
+                ),
+                response,
+            )
 
-    parsed_actions, responses = tuple(
-        zip(*[future.result() for future in futures])
-    )
-    responses = list(responses)
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self._max_workers
+        ) as executor:
+            futures = [
+                executor.submit(_generate_then_parse, model_input)
+                for _ in range(self._num_samples)
+            ]
 
-    frequency_from_parsed_action: collections.Counter[str | None] = (
-        collections.Counter(parsed_actions)
-    )
+        parsed_actions, responses = tuple(zip(*[future.result() for future in futures]))
+        responses = list(responses)
 
-    most_common_actions = frequency_from_parsed_action.most_common(1)
+        frequency_from_parsed_action: collections.Counter[str | None] = (
+            collections.Counter(parsed_actions)
+        )
 
-    if len(most_common_actions) == 1:
-      return SamplerOutput(
-          action=most_common_actions[0][0],
-          extracted_action=most_common_actions[0][0],
-          matched_action=None,
-          generate_returns=responses,
-          auxiliary_outputs={"frequencies": dict(frequency_from_parsed_action)},
-      )
-    elif len(most_common_actions) > 1:
-      rng = random.Random()
-      return SamplerOutput(
-          action=rng.choice(most_common_actions)[0],
-          extracted_action=rng.choice(most_common_actions)[0],
-          matched_action=None,
-          generate_returns=responses,
-          auxiliary_outputs={"frequencies": dict(frequency_from_parsed_action)},
-      )
-    else:
-      return SamplerOutput(
-          action=None,
-          extracted_action=None,
-          matched_action=None,
-          generate_returns=[],
-          auxiliary_outputs={},
-      )
+        most_common_actions = frequency_from_parsed_action.most_common(1)
 
-  def sample_action_with_text_input(
-      self, model_input: tournament_util.ModelTextInput
-  ) -> SamplerOutput:
-    return self._sample_action(
-        self._model.generate_with_text_input, model_input
-    )
+        if len(most_common_actions) == 1:
+            return SamplerOutput(
+                action=most_common_actions[0][0],
+                extracted_action=most_common_actions[0][0],
+                matched_action=None,
+                generate_returns=responses,
+                auxiliary_outputs={"frequencies": dict(frequency_from_parsed_action)},
+            )
+        elif len(most_common_actions) > 1:
+            rng = random.Random()
+            return SamplerOutput(
+                action=rng.choice(most_common_actions)[0],
+                extracted_action=rng.choice(most_common_actions)[0],
+                matched_action=None,
+                generate_returns=responses,
+                auxiliary_outputs={"frequencies": dict(frequency_from_parsed_action)},
+            )
+        else:
+            return SamplerOutput(
+                action=None,
+                extracted_action=None,
+                matched_action=None,
+                generate_returns=[],
+                auxiliary_outputs={},
+            )
+
+    def sample_action_with_text_input(
+        self, model_input: tournament_util.ModelTextInput
+    ) -> SamplerOutput:
+        return self._sample_action(self._model.generate_with_text_input, model_input)
 
 
 class MajorityVoteMultimodalSampler(MajorityVoteSampler, MultimodalSampler):
-  """Multimodal version of MajorityVoteSampler."""
+    """Multimodal version of MajorityVoteSampler."""
 
-  def __init__(
-      self,
-      model: model_generation.MultimodalModel,
-      num_samples: int,
-      parser: parsers.TextParser,
-      max_workers: int = 10,
-  ):
-    super().__init__(model, num_samples, parser, max_workers)
+    def __init__(
+        self,
+        model: model_generation.MultimodalModel,
+        num_samples: int,
+        parser: parsers.TextParser,
+        max_workers: int = 10,
+    ):
+        super().__init__(model, num_samples, parser, max_workers)
 
-  def sample_action_with_image_text_input(
-      self, model_input: tournament_util.ModelImageTextInput
-  ) -> SamplerOutput:
-    assert isinstance(self._model, model_generation.MultimodalModel)
-    return self._sample_action(
-        self._model.generate_with_image_text_input, model_input
-    )
+    def sample_action_with_image_text_input(
+        self, model_input: tournament_util.ModelImageTextInput
+    ) -> SamplerOutput:
+        assert isinstance(self._model, model_generation.MultimodalModel)
+        return self._sample_action(
+            self._model.generate_with_image_text_input, model_input
+        )

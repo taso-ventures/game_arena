@@ -1,0 +1,1102 @@
+{
+  "states": {
+    "early_game": {
+      "game": {
+        "turn": 10,
+        "phase": "movement",
+        "is_over": false,
+        "current_player": 1,
+        "scores": {"1": 18, "2": 15}
+      },
+      "map": {
+        "width": 6,
+        "height": 4,
+        "tiles": [
+          {"x": 0, "y": 0, "terrain": "grassland", "resource": "wheat", "city_id": 301, "unit_ids": [101]},
+          {"x": 1, "y": 0, "terrain": "plains", "resource": null, "city_id": null, "unit_ids": []},
+          {"x": 2, "y": 0, "terrain": "forest", "resource": "game", "city_id": null, "unit_ids": []},
+          {"x": 0, "y": 1, "terrain": "hill", "resource": null, "city_id": null, "unit_ids": [201]},
+          {"x": 1, "y": 1, "terrain": "grassland", "resource": null, "city_id": null, "unit_ids": [101]},
+          {"x": 2, "y": 1, "terrain": "river", "resource": null, "city_id": null, "unit_ids": []},
+          {"x": 3, "y": 1, "terrain": "ocean", "resource": null, "city_id": null, "unit_ids": []},
+          {"x": 0, "y": 2, "terrain": "forest", "resource": null, "city_id": null, "unit_ids": []},
+          {"x": 1, "y": 2, "terrain": "plains", "resource": "horse", "city_id": null, "unit_ids": [102]},
+          {"x": 2, "y": 2, "terrain": "plains", "resource": null, "city_id": null, "unit_ids": []}
+        ],
+        "visibility": {
+          "1": [[0, 0], [1, 0], [0, 1], [1, 1], [1, 2], [2, 2]],
+          "2": [[3, 1], [2, 2], [3, 2], [4, 2]]
+        }
+      },
+      "players": [
+        {
+          "id": 1,
+          "name": "Athens",
+          "nation": "Greek",
+          "score": 18,
+          "gold": 40,
+          "techs": ["Pottery", "Bronze Working"],
+          "government": "Despotism"
+        },
+        {
+          "id": 2,
+          "name": "Sparta",
+          "nation": "Greek",
+          "score": 15,
+          "gold": 32,
+          "techs": ["Pottery"],
+          "government": "Despotism"
+        }
+      ],
+      "units": [
+        {
+          "id": 101,
+          "owner": 1,
+          "type": "warrior",
+          "x": 1,
+          "y": 1,
+          "hp": 100,
+          "moves_left": 1,
+          "veteran": false,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_move", "target": {"x": 1, "y": 2}, "parameters": {"direction": "S"}},
+            {"type": "unit_fortify", "target": null, "parameters": {}}
+          ]
+        },
+        {
+          "id": 102,
+          "owner": 1,
+          "type": "scout",
+          "x": 1,
+          "y": 2,
+          "hp": 70,
+          "moves_left": 2,
+          "veteran": false,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_move", "target": {"x": 2, "y": 2}, "parameters": {"direction": "E"}},
+            {"type": "unit_move", "target": {"x": 0, "y": 2}, "parameters": {"direction": "W"}}
+          ]
+        },
+        {
+          "id": 201,
+          "owner": 2,
+          "type": "warrior",
+          "x": 0,
+          "y": 1,
+          "hp": 100,
+          "moves_left": 1,
+          "veteran": false,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_move", "target": {"x": 0, "y": 2}, "parameters": {"direction": "S"}}
+          ]
+        }
+      ],
+      "cities": [
+        {
+          "id": 301,
+          "owner": 1,
+          "name": "Athens",
+          "x": 0,
+          "y": 0,
+          "population": 3,
+          "production": {"current": "granary", "progress": 20, "queue": ["settler"]},
+          "specialists": {"scientists": 1},
+          "available_actions": [
+            {"type": "city_production", "target": "settler", "parameters": {"priority": "expansion"}},
+            {"type": "city_adjust_specialist", "target": {"scientists": 2}, "parameters": {}}
+          ]
+        }
+      ]
+    },
+    "mid_game": {
+      "game": {
+        "turn": 52,
+        "phase": "production",
+        "is_over": false,
+        "current_player": 2,
+        "scores": {"1": 112, "2": 120}
+      },
+      "map": {
+        "width": 8,
+        "height": 6,
+        "tiles": [
+          {"x": 4, "y": 3, "terrain": "city", "resource": null, "city_id": 401, "unit_ids": [301]},
+          {"x": 5, "y": 3, "terrain": "grassland", "resource": "iron", "city_id": null, "unit_ids": [302]},
+          {"x": 6, "y": 3, "terrain": "coast", "resource": null, "city_id": null, "unit_ids": []},
+          {"x": 4, "y": 4, "terrain": "forest", "resource": null, "city_id": null, "unit_ids": [303]},
+          {"x": 5, "y": 4, "terrain": "plains", "resource": null, "city_id": null, "unit_ids": []}
+        ],
+        "visibility": {
+          "1": [[4, 3], [5, 3], [4, 4]],
+          "2": [[5, 3], [6, 3], [5, 4]]
+        }
+      },
+      "players": [
+        {
+          "id": 1,
+          "name": "Babylon",
+          "nation": "Babylonian",
+          "score": 112,
+          "gold": 320,
+          "techs": ["Mathematics", "Currency", "Construction"],
+          "government": "Monarchy"
+        },
+        {
+          "id": 2,
+          "name": "Persia",
+          "nation": "Persian",
+          "score": 120,
+          "gold": 280,
+          "techs": ["Horseback Riding", "Iron Working", "Construction"],
+          "government": "Republic"
+        }
+      ],
+      "units": [
+        {
+          "id": 301,
+          "owner": 1,
+          "type": "legion",
+          "x": 4,
+          "y": 3,
+          "hp": 90,
+          "moves_left": 1,
+          "veteran": true,
+          "orders": ["fortified"],
+          "available_actions": [
+            {"type": "unit_move", "target": {"x": 5, "y": 3}, "parameters": {"direction": "E"}},
+            {"type": "unit_attack", "target_unit": 302, "parameters": {"odds": 0.65}}
+          ]
+        },
+        {
+          "id": 302,
+          "owner": 2,
+          "type": "horseman",
+          "x": 5,
+          "y": 3,
+          "hp": 80,
+          "moves_left": 2,
+          "veteran": false,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_move", "target": {"x": 5, "y": 4}, "parameters": {"direction": "S"}},
+            {"type": "unit_retreat", "target": {"x": 6, "y": 3}, "parameters": {"direction": "E"}}
+          ]
+        },
+        {
+          "id": 303,
+          "owner": 1,
+          "type": "catapult",
+          "x": 4,
+          "y": 4,
+          "hp": 60,
+          "moves_left": 1,
+          "veteran": false,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_bombard", "target": {"x": 5, "y": 3}, "parameters": {"city_damage": 12}}
+          ]
+        }
+      ],
+      "cities": [
+        {
+          "id": 401,
+          "owner": 1,
+          "name": "Babylon",
+          "x": 4,
+          "y": 3,
+          "population": 7,
+          "production": {"current": "library", "progress": 48, "queue": ["marketplace", "university"]},
+          "specialists": {"scientists": 2},
+          "available_actions": [
+            {"type": "city_production", "target": "marketplace", "parameters": {"rush_cost": 120}},
+            {"type": "city_build_unit", "target": "pikeman", "parameters": {"turns": 4}}
+          ]
+        },
+        {
+          "id": 402,
+          "owner": 2,
+          "name": "Persepolis",
+          "x": 6,
+          "y": 3,
+          "population": 6,
+          "production": {"current": "horseman", "progress": 20, "queue": ["courthouse"]},
+          "specialists": {"taxmen": 1},
+          "available_actions": [
+            {"type": "city_switch_production", "target": "temple", "parameters": {"lost_shields": 8}},
+            {"type": "city_hurry_production", "target": "horseman", "parameters": {"gold": 80}}
+          ]
+        }
+      ]
+    },
+    "late_game": {
+      "game": {
+        "turn": 152,
+        "phase": "movement",
+        "is_over": false,
+        "current_player": 1,
+        "scores": {"1": 540, "2": 520}
+      },
+      "map": {
+        "width": 10,
+        "height": 8,
+        "tiles": [
+          {"x": 7, "y": 5, "terrain": "city", "resource": null, "city_id": 501, "unit_ids": [401, 402]},
+          {"x": 7, "y": 6, "terrain": "plains", "resource": "oil", "city_id": null, "unit_ids": [403]},
+          {"x": 8, "y": 5, "terrain": "mountain", "resource": null, "city_id": null, "unit_ids": []},
+          {"x": 6, "y": 5, "terrain": "river", "resource": null, "city_id": null, "unit_ids": [404]}
+        ],
+        "visibility": {
+          "1": [[7, 5], [7, 6], [6, 5]],
+          "2": [[7, 5], [8, 5]]
+        }
+      },
+      "players": [
+        {
+          "id": 1,
+          "name": "America",
+          "nation": "American",
+          "score": 540,
+          "gold": 980,
+          "techs": ["Computers", "Rocketry", "Robotics", "Recycling"],
+          "government": "Democracy"
+        },
+        {
+          "id": 2,
+          "name": "Russia",
+          "nation": "Russian",
+          "score": 520,
+          "gold": 850,
+          "techs": ["Computers", "Rocketry", "Space Flight"],
+          "government": "Communism"
+        }
+      ],
+      "units": [
+        {
+          "id": 401,
+          "owner": 1,
+          "type": "modern_armor",
+          "x": 7,
+          "y": 5,
+          "hp": 100,
+          "moves_left": 3,
+          "veteran": true,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_move", "target": {"x": 7, "y": 6}, "parameters": {"direction": "S"}},
+            {"type": "unit_attack", "target_unit": 403, "parameters": {"odds": 0.72}}
+          ]
+        },
+        {
+          "id": 402,
+          "owner": 1,
+          "type": "mech_infantry",
+          "x": 7,
+          "y": 5,
+          "hp": 95,
+          "moves_left": 1,
+          "veteran": true,
+          "orders": ["fortified"],
+          "available_actions": [
+            {"type": "unit_fortify", "target": null, "parameters": {}},
+            {"type": "unit_repair", "target": null, "parameters": {"turns": 1}}
+          ]
+        },
+        {
+          "id": 403,
+          "owner": 2,
+          "type": "infantry",
+          "x": 7,
+          "y": 6,
+          "hp": 80,
+          "moves_left": 1,
+          "veteran": false,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_move", "target": {"x": 8, "y": 6}, "parameters": {"direction": "E"}},
+            {"type": "unit_fortify", "target": null, "parameters": {}}
+          ]
+        },
+        {
+          "id": 404,
+          "owner": 2,
+          "type": "stealth_bomber",
+          "x": 6,
+          "y": 5,
+          "hp": 60,
+          "moves_left": 2,
+          "veteran": false,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_air_bombard", "target": {"x": 7, "y": 5}, "parameters": {"city_damage": 20}},
+            {"type": "unit_airbase", "target": {"x": 6, "y": 6}, "parameters": {}}
+          ]
+        }
+      ],
+      "cities": [
+        {
+          "id": 501,
+          "owner": 1,
+          "name": "Washington",
+          "x": 7,
+          "y": 5,
+          "population": 18,
+          "production": {"current": "apollo_program", "progress": 400, "queue": ["ss_life_support", "ss_engine"]},
+          "specialists": {"scientists": 6, "engineers": 2},
+          "available_actions": [
+            {"type": "city_launch_ss_part", "target": "ss_life_support", "parameters": {"turns": 3}},
+            {"type": "city_reassign_specialists", "target": {"engineers": 3}, "parameters": {}}
+          ]
+        }
+      ]
+    },
+    "combat_scenario": {
+      "game": {
+        "turn": 78,
+        "phase": "combat",
+        "is_over": false,
+        "current_player": 2,
+        "scores": {"1": 260, "2": 270}
+      },
+      "map": {
+        "width": 7,
+        "height": 5,
+        "tiles": [
+          {"x": 2, "y": 2, "terrain": "hill", "resource": null, "city_id": null, "unit_ids": [601, 602]},
+          {"x": 3, "y": 2, "terrain": "plains", "resource": null, "city_id": null, "unit_ids": [603]},
+          {"x": 2, "y": 3, "terrain": "river", "resource": null, "city_id": null, "unit_ids": [604]},
+          {"x": 3, "y": 3, "terrain": "forest", "resource": null, "city_id": null, "unit_ids": []}
+        ],
+        "visibility": {
+          "1": [[2, 2], [3, 2], [2, 3]],
+          "2": [[2, 2], [3, 2], [3, 3]]
+        }
+      },
+      "players": [
+        {
+          "id": 1,
+          "name": "Zulu",
+          "nation": "Zulu",
+          "score": 260,
+          "gold": 180,
+          "techs": ["Feudalism", "Chivalry"],
+          "government": "Monarchy"
+        },
+        {
+          "id": 2,
+          "name": "Mongol",
+          "nation": "Mongol",
+          "score": 270,
+          "gold": 195,
+          "techs": ["Feudalism", "Chivalry"],
+          "government": "Monarchy"
+        }
+      ],
+      "units": [
+        {
+          "id": 601,
+          "owner": 1,
+          "type": "pikeman",
+          "x": 2,
+          "y": 2,
+          "hp": 80,
+          "moves_left": 1,
+          "veteran": true,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_hold_position", "target": null, "parameters": {}},
+            {"type": "unit_attack", "target_unit": 603, "parameters": {"odds": 0.45}}
+          ]
+        },
+        {
+          "id": 602,
+          "owner": 1,
+          "type": "catapult",
+          "x": 2,
+          "y": 2,
+          "hp": 60,
+          "moves_left": 1,
+          "veteran": false,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_bombard", "target": {"x": 3, "y": 2}, "parameters": {"damage": 7}}
+          ]
+        },
+        {
+          "id": 603,
+          "owner": 2,
+          "type": "knight",
+          "x": 3,
+          "y": 2,
+          "hp": 90,
+          "moves_left": 2,
+          "veteran": true,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_attack", "target_unit": 601, "parameters": {"odds": 0.55}},
+            {"type": "unit_move", "target": {"x": 3, "y": 3}, "parameters": {"direction": "S"}}
+          ]
+        },
+        {
+          "id": 604,
+          "owner": 2,
+          "type": "horseman",
+          "x": 2,
+          "y": 3,
+          "hp": 70,
+          "moves_left": 1,
+          "veteran": false,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_flank", "target": {"x": 2, "y": 2}, "parameters": {"bonus": 0.1}}
+          ]
+        }
+      ],
+      "cities": []
+    },
+    "city_production": {
+      "game": {
+        "turn": 44,
+        "phase": "production",
+        "is_over": false,
+        "current_player": 1,
+        "scores": {"1": 180, "2": 150}
+      },
+      "map": {
+        "width": 5,
+        "height": 5,
+        "tiles": [
+          {"x": 1, "y": 1, "terrain": "city", "resource": null, "city_id": 701, "unit_ids": [701]},
+          {"x": 1, "y": 2, "terrain": "plains", "resource": "wheat", "city_id": null, "unit_ids": []},
+          {"x": 2, "y": 1, "terrain": "plains", "resource": null, "city_id": null, "unit_ids": []}
+        ],
+        "visibility": {
+          "1": [[1, 1], [1, 2], [2, 1]],
+          "2": [[3, 3], [3, 2]]
+        }
+      },
+      "players": [
+        {
+          "id": 1,
+          "name": "Egypt",
+          "nation": "Egyptian",
+          "score": 180,
+          "gold": 210,
+          "techs": ["Masonry", "Writing", "Philosophy"],
+          "government": "Republic"
+        },
+        {
+          "id": 2,
+          "name": "Rome",
+          "nation": "Roman",
+          "score": 150,
+          "gold": 160,
+          "techs": ["Masonry", "Writing"],
+          "government": "Monarchy"
+        }
+      ],
+      "units": [
+        {
+          "id": 701,
+          "owner": 1,
+          "type": "worker",
+          "x": 1,
+          "y": 1,
+          "hp": 50,
+          "moves_left": 1,
+          "veteran": false,
+          "orders": ["irrigating"],
+          "available_actions": [
+            {"type": "unit_build_improvement", "target": {"x": 1, "y": 2}, "parameters": {"improvement": "irrigation"}},
+            {"type": "unit_road", "target": {"x": 2, "y": 1}, "parameters": {}}
+          ]
+        }
+      ],
+      "cities": [
+        {
+          "id": 701,
+          "owner": 1,
+          "name": "Memphis",
+          "x": 1,
+          "y": 1,
+          "population": 6,
+          "production": {"current": "pyramids", "progress": 120, "queue": ["marketplace", "settler"]},
+          "specialists": {"entertainers": 1},
+          "available_actions": [
+            {"type": "city_adjust_production", "target": "marketplace", "parameters": {"shields": 12}},
+            {"type": "city_set_governor", "target": {"focus": "growth"}, "parameters": {}}
+          ]
+        },
+        {
+          "id": 702,
+          "owner": 2,
+          "name": "Rome",
+          "x": 3,
+          "y": 3,
+          "population": 5,
+          "production": {"current": "legion", "progress": 30, "queue": ["courthouse"]},
+          "specialists": {"taxmen": 1},
+          "available_actions": [
+            {"type": "city_switch_production", "target": "aqueduct", "parameters": {"lost_shields": 5}}
+          ]
+        }
+      ]
+    },
+    "diplomatic_scenario": {
+      "game": {
+        "turn": 88,
+        "phase": "diplomacy",
+        "is_over": false,
+        "current_player": 1,
+        "scores": {"1": 320, "2": 340, "3": 310}
+      },
+      "map": {
+        "width": 8,
+        "height": 6,
+        "tiles": [
+          {"x": 2, "y": 2, "terrain": "city", "resource": null, "city_id": 801, "unit_ids": [801], "improvements": ["road"], "owner": 1},
+          {"x": 5, "y": 2, "terrain": "city", "resource": null, "city_id": 802, "unit_ids": [802], "improvements": ["road"], "owner": 2},
+          {"x": 3, "y": 4, "terrain": "city", "resource": null, "city_id": 803, "unit_ids": [803], "improvements": ["road"], "owner": 3},
+          {"x": 3, "y": 3, "terrain": "plains", "resource": "silk", "city_id": null, "unit_ids": [804, 805], "improvements": ["road"]}
+        ],
+        "visibility": {
+          "1": [[2, 2], [3, 2], [2, 3], [3, 3]],
+          "2": [[5, 2], [4, 2], [5, 3], [3, 3]],
+          "3": [[3, 4], [3, 3], [2, 4], [4, 4]]
+        }
+      },
+      "players": [
+        {
+          "id": 1,
+          "name": "France",
+          "nation": "French",
+          "score": 320,
+          "gold": 450,
+          "techs": ["Navigation", "Gunpowder", "Banking"],
+          "government": "Monarchy",
+          "research_target": "Chemistry",
+          "research_progress": 35,
+          "diplomatic_relations": [
+            {"player_id": 2, "status": "peace"},
+            {"player_id": 3, "status": "ally"}
+          ],
+          "trade_routes": [{"from": 801, "to": 803, "value": 12}],
+          "science_rate": 60,
+          "tax_rate": 30,
+          "luxuries_rate": 10
+        },
+        {
+          "id": 2,
+          "name": "England",
+          "nation": "English",
+          "score": 340,
+          "gold": 380,
+          "techs": ["Navigation", "Gunpowder", "Economics"],
+          "government": "Republic",
+          "research_target": "Steam Engine",
+          "research_progress": 20,
+          "diplomatic_relations": [
+            {"player_id": 1, "status": "peace"},
+            {"player_id": 3, "status": "war"}
+          ],
+          "trade_routes": [],
+          "science_rate": 70,
+          "tax_rate": 30,
+          "luxuries_rate": 0
+        },
+        {
+          "id": 3,
+          "name": "Spain",
+          "nation": "Spanish",
+          "score": 310,
+          "gold": 290,
+          "techs": ["Navigation", "Gunpowder"],
+          "government": "Monarchy",
+          "research_target": "Banking",
+          "research_progress": 45,
+          "diplomatic_relations": [
+            {"player_id": 1, "status": "ally"},
+            {"player_id": 2, "status": "war"}
+          ],
+          "trade_routes": [{"from": 803, "to": 801, "value": 12}],
+          "science_rate": 50,
+          "tax_rate": 40,
+          "luxuries_rate": 10
+        }
+      ],
+      "units": [
+        {
+          "id": 801,
+          "owner": 1,
+          "type": "diplomat",
+          "x": 2,
+          "y": 2,
+          "hp": 100,
+          "moves_left": 2,
+          "veteran": false,
+          "fortified": false,
+          "activity": null,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_establish_embassy", "target": {"city_id": 802}, "parameters": {"cost": 50}},
+            {"type": "unit_negotiate_treaty", "target": {"player_id": 2}, "parameters": {"treaty_type": "trade"}}
+          ]
+        },
+        {
+          "id": 802,
+          "owner": 2,
+          "type": "caravan",
+          "x": 5,
+          "y": 2,
+          "hp": 100,
+          "moves_left": 1,
+          "veteran": false,
+          "fortified": false,
+          "activity": null,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_establish_trade_route", "target": {"city_id": 801}, "parameters": {"value": 15}}
+          ]
+        },
+        {
+          "id": 803,
+          "owner": 3,
+          "type": "galleon",
+          "x": 3,
+          "y": 4,
+          "hp": 80,
+          "moves_left": 3,
+          "veteran": true,
+          "fortified": false,
+          "activity": null,
+          "cargo_ids": [804],
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_transport", "target": {"id": 805}, "parameters": {}},
+            {"type": "unit_unload", "target": {"id": 804}, "parameters": {}}
+          ]
+        },
+        {
+          "id": 804,
+          "owner": 3,
+          "type": "conquistador",
+          "x": 3,
+          "y": 3,
+          "hp": 100,
+          "moves_left": 0,
+          "veteran": true,
+          "fortified": false,
+          "activity": null,
+          "transport_id": 803,
+          "orders": [],
+          "available_actions": []
+        },
+        {
+          "id": 805,
+          "owner": 1,
+          "type": "musketeer",
+          "x": 3,
+          "y": 3,
+          "hp": 90,
+          "moves_left": 1,
+          "veteran": false,
+          "fortified": false,
+          "activity": null,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_attack", "target_unit": 804, "parameters": {"odds": 0.6}}
+          ]
+        }
+      ],
+      "cities": [
+        {
+          "id": 801,
+          "owner": 1,
+          "name": "Paris",
+          "x": 2,
+          "y": 2,
+          "population": 8,
+          "production": {"current": "bank", "progress": 60, "queue": ["university"]},
+          "buildings": ["marketplace", "library"],
+          "specialists": {"taxmen": 1, "scientists": 1},
+          "trade_routes": [803],
+          "celebrating": false,
+          "disorder": false,
+          "worked_tiles": [[2,1], [1,2], [2,3]],
+          "available_actions": [
+            {"type": "city_establish_trade_route", "target": {"id": 802}, "parameters": {"value": 18}},
+            {"type": "city_set_tax_rates", "target": {"tax": 40, "science": 50, "luxuries": 10}, "parameters": {}}
+          ]
+        },
+        {
+          "id": 802,
+          "owner": 2,
+          "name": "London",
+          "x": 5,
+          "y": 2,
+          "population": 9,
+          "production": {"current": "frigate", "progress": 30, "queue": ["bank"]},
+          "buildings": ["marketplace", "library", "harbor"],
+          "specialists": {"scientists": 2},
+          "trade_routes": [],
+          "celebrating": true,
+          "disorder": false,
+          "worked_tiles": [[5,1], [4,2], [5,3]],
+          "available_actions": [
+            {"type": "city_production", "target": "frigate", "parameters": {"priority": "military"}},
+            {"type": "city_hurry_production", "target": "frigate", "parameters": {"gold": 120}}
+          ]
+        },
+        {
+          "id": 803,
+          "owner": 3,
+          "name": "Madrid",
+          "x": 3,
+          "y": 4,
+          "population": 6,
+          "production": {"current": "cathedral", "progress": 80, "queue": ["marketplace"]},
+          "buildings": ["temple"],
+          "specialists": {"entertainers": 1},
+          "trade_routes": [801],
+          "celebrating": false,
+          "disorder": false,
+          "worked_tiles": [[3,3], [2,4], [4,4]],
+          "available_actions": [
+            {"type": "city_celebrate", "target": null, "parameters": {}},
+            {"type": "city_adjust_specialist", "target": {"entertainers": 2}, "parameters": {}}
+          ]
+        }
+      ]
+    },
+    "technology_advancement": {
+      "game": {
+        "turn": 65,
+        "phase": "research",
+        "is_over": false,
+        "current_player": 1,
+        "scores": {"1": 240, "2": 220}
+      },
+      "map": {
+        "width": 6,
+        "height": 5,
+        "tiles": [
+          {"x": 2, "y": 2, "terrain": "city", "resource": null, "city_id": 901, "unit_ids": [901], "improvements": ["road", "irrigation"], "owner": 1},
+          {"x": 4, "y": 2, "terrain": "city", "resource": null, "city_id": 902, "unit_ids": [902], "improvements": ["road"], "owner": 2},
+          {"x": 3, "y": 3, "terrain": "mountain", "resource": "iron", "city_id": null, "unit_ids": [903], "improvements": ["mine"], "owner": 1}
+        ],
+        "visibility": {
+          "1": [[2, 2], [3, 2], [2, 3], [3, 3], [1, 2]],
+          "2": [[4, 2], [3, 2], [4, 3], [5, 2]]
+        }
+      },
+      "players": [
+        {
+          "id": 1,
+          "name": "Rome",
+          "nation": "Roman",
+          "score": 240,
+          "gold": 180,
+          "science": 85,
+          "techs": ["Bronze Working", "Iron Working", "Mathematics", "Engineering"],
+          "government": "Republic",
+          "research_target": "Invention",
+          "research_progress": 78,
+          "diplomatic_relations": [{"player_id": 2, "status": "neutral"}],
+          "science_rate": 80,
+          "tax_rate": 20,
+          "luxuries_rate": 0
+        },
+        {
+          "id": 2,
+          "name": "Carthage",
+          "nation": "Carthaginian",
+          "score": 220,
+          "gold": 220,
+          "science": 45,
+          "techs": ["Bronze Working", "Iron Working", "Alphabet", "Trade"],
+          "government": "Republic",
+          "research_target": "Mathematics",
+          "research_progress": 35,
+          "diplomatic_relations": [{"player_id": 1, "status": "neutral"}],
+          "science_rate": 60,
+          "tax_rate": 40,
+          "luxuries_rate": 0
+        }
+      ],
+      "units": [
+        {
+          "id": 901,
+          "owner": 1,
+          "type": "engineer",
+          "x": 2,
+          "y": 2,
+          "hp": 100,
+          "moves_left": 2,
+          "veteran": false,
+          "fortified": false,
+          "activity": "building_aqueduct",
+          "orders": ["building"],
+          "available_actions": [
+            {"type": "unit_build_improvement", "target": {"x": 2, "y": 1}, "parameters": {"improvement": "aqueduct"}},
+            {"type": "unit_road", "target": {"x": 1, "y": 2}, "parameters": {}}
+          ]
+        },
+        {
+          "id": 902,
+          "owner": 2,
+          "type": "phalanx",
+          "x": 4,
+          "y": 2,
+          "hp": 100,
+          "moves_left": 1,
+          "veteran": true,
+          "fortified": true,
+          "activity": null,
+          "orders": ["fortified"],
+          "available_actions": [
+            {"type": "unit_fortify", "target": null, "parameters": {}}
+          ]
+        },
+        {
+          "id": 903,
+          "owner": 1,
+          "type": "worker",
+          "x": 3,
+          "y": 3,
+          "hp": 50,
+          "moves_left": 1,
+          "veteran": false,
+          "fortified": false,
+          "activity": "mining",
+          "orders": ["mining"],
+          "available_actions": [
+            {"type": "unit_mine", "target": {"x": 3, "y": 3}, "parameters": {"improvement": "mine"}}
+          ]
+        }
+      ],
+      "cities": [
+        {
+          "id": 901,
+          "owner": 1,
+          "name": "Rome",
+          "x": 2,
+          "y": 2,
+          "population": 10,
+          "production": {"current": "university", "progress": 120, "queue": ["library", "marketplace"]},
+          "buildings": ["granary", "barracks", "aqueduct"],
+          "specialists": {"scientists": 3, "taxmen": 1},
+          "food_storage": 18,
+          "shield_storage": 25,
+          "trade_routes": [],
+          "celebrating": false,
+          "disorder": false,
+          "worked_tiles": [[2,1], [1,2], [2,3], [3,2], [3,3]],
+          "available_actions": [
+            {"type": "city_production", "target": "colosseum", "parameters": {"priority": "happiness"}},
+            {"type": "city_reassign_specialists", "target": {"scientists": 4}, "parameters": {}}
+          ]
+        },
+        {
+          "id": 902,
+          "owner": 2,
+          "name": "Carthage",
+          "x": 4,
+          "y": 2,
+          "population": 7,
+          "production": {"current": "trireme", "progress": 45, "queue": ["harbor"]},
+          "buildings": ["granary", "marketplace"],
+          "specialists": {"taxmen": 2},
+          "food_storage": 12,
+          "shield_storage": 8,
+          "trade_routes": [],
+          "celebrating": false,
+          "disorder": false,
+          "worked_tiles": [[4,1], [5,2], [4,3]],
+          "available_actions": [
+            {"type": "city_switch_production", "target": "library", "parameters": {"lost_shields": 10}},
+            {"type": "city_adjust_specialist", "target": {"scientists": 1, "taxmen": 1}, "parameters": {}}
+          ]
+        }
+      ]
+    },
+    "exploration_scenario": {
+      "game": {
+        "turn": 25,
+        "phase": "movement",
+        "is_over": false,
+        "current_player": 1,
+        "scores": {"1": 45, "2": 42}
+      },
+      "map": {
+        "width": 10,
+        "height": 8,
+        "tiles": [
+          {"x": 1, "y": 1, "terrain": "city", "resource": null, "city_id": 1001, "unit_ids": [1001], "improvements": [], "owner": 1},
+          {"x": 8, "y": 6, "terrain": "city", "resource": null, "city_id": 1002, "unit_ids": [1002], "improvements": [], "owner": 2},
+          {"x": 3, "y": 2, "terrain": "ocean", "resource": null, "city_id": null, "unit_ids": [1003], "improvements": []},
+          {"x": 5, "y": 4, "terrain": "jungle", "resource": "spice", "city_id": null, "unit_ids": [1004], "improvements": []},
+          {"x": 7, "y": 3, "terrain": "grassland", "resource": "game", "city_id": null, "unit_ids": [], "improvements": [], "pollution": false},
+          {"x": 2, "y": 6, "terrain": "mountain", "resource": "gold", "city_id": null, "unit_ids": [], "improvements": [], "pollution": false}
+        ],
+        "visibility": {
+          "1": [[1, 1], [1, 2], [2, 1], [2, 2], [3, 2], [3, 3], [4, 2]],
+          "2": [[8, 6], [8, 5], [7, 6], [7, 5], [6, 6], [6, 5]]
+        }
+      },
+      "players": [
+        {
+          "id": 1,
+          "name": "Vikings",
+          "nation": "Viking",
+          "score": 45,
+          "gold": 25,
+          "science": 8,
+          "techs": ["Seafaring", "Bronze Working"],
+          "government": "Despotism",
+          "research_target": "Alphabet",
+          "research_progress": 12,
+          "diplomatic_relations": [],
+          "science_rate": 50,
+          "tax_rate": 50,
+          "luxuries_rate": 0
+        },
+        {
+          "id": 2,
+          "name": "Polynesians",
+          "nation": "Polynesian",
+          "score": 42,
+          "gold": 30,
+          "science": 6,
+          "techs": ["Seafaring", "Pottery"],
+          "government": "Despotism",
+          "research_target": "Bronze Working",
+          "research_progress": 8,
+          "diplomatic_relations": [],
+          "science_rate": 40,
+          "tax_rate": 60,
+          "luxuries_rate": 0
+        }
+      ],
+      "units": [
+        {
+          "id": 1001,
+          "owner": 1,
+          "type": "settler",
+          "x": 1,
+          "y": 1,
+          "hp": 100,
+          "moves_left": 1,
+          "veteran": false,
+          "fortified": false,
+          "activity": null,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_found_city", "target": {"x": 1, "y": 1}, "parameters": {"name": "Oslo"}},
+            {"type": "unit_move", "target": {"x": 2, "y": 1}, "parameters": {"direction": "E"}}
+          ]
+        },
+        {
+          "id": 1002,
+          "owner": 2,
+          "type": "warrior",
+          "x": 8,
+          "y": 6,
+          "hp": 100,
+          "moves_left": 1,
+          "veteran": false,
+          "fortified": false,
+          "activity": null,
+          "orders": [],
+          "available_actions": [
+            {"type": "unit_move", "target": {"x": 7, "y": 6}, "parameters": {"direction": "W"}},
+            {"type": "unit_fortify", "target": null, "parameters": {}}
+          ]
+        },
+        {
+          "id": 1003,
+          "owner": 1,
+          "type": "trireme",
+          "x": 3,
+          "y": 2,
+          "hp": 100,
+          "moves_left": 2,
+          "veteran": false,
+          "fortified": false,
+          "activity": "exploring",
+          "fuel": -1,
+          "cargo_ids": [1004],
+          "orders": ["exploring"],
+          "available_actions": [
+            {"type": "unit_explore", "target": null, "parameters": {"auto": true}},
+            {"type": "unit_move", "target": {"x": 4, "y": 2}, "parameters": {"direction": "E"}},
+            {"type": "unit_unload", "target": {"id": 1004}, "parameters": {}}
+          ]
+        },
+        {
+          "id": 1004,
+          "owner": 1,
+          "type": "scout",
+          "x": 5,
+          "y": 4,
+          "hp": 80,
+          "moves_left": 0,
+          "veteran": false,
+          "fortified": false,
+          "activity": "exploring",
+          "transport_id": null,
+          "orders": ["exploring"],
+          "available_actions": [
+            {"type": "unit_explore", "target": null, "parameters": {"auto": true}},
+            {"type": "unit_move", "target": {"x": 6, "y": 4}, "parameters": {"direction": "E"}}
+          ]
+        }
+      ],
+      "cities": [
+        {
+          "id": 1001,
+          "owner": 1,
+          "name": "Bergen",
+          "x": 1,
+          "y": 1,
+          "population": 2,
+          "production": {"current": "warrior", "progress": 8, "queue": ["granary"]},
+          "buildings": [],
+          "specialists": {},
+          "food_storage": 4,
+          "shield_storage": 2,
+          "trade_routes": [],
+          "celebrating": false,
+          "disorder": false,
+          "worked_tiles": [[1,2], [2,1]],
+          "available_actions": [
+            {"type": "city_production", "target": "trireme", "parameters": {"priority": "exploration"}},
+            {"type": "city_set_citizens", "target": {"2,2": true}, "parameters": {}}
+          ]
+        },
+        {
+          "id": 1002,
+          "owner": 2,
+          "name": "Tahiti",
+          "x": 8,
+          "y": 6,
+          "population": 2,
+          "production": {"current": "settler", "progress": 15, "queue": []},
+          "buildings": [],
+          "specialists": {},
+          "food_storage": 6,
+          "shield_storage": 3,
+          "trade_routes": [],
+          "celebrating": false,
+          "disorder": false,
+          "worked_tiles": [[8,5], [7,6]],
+          "available_actions": [
+            {"type": "city_production", "target": "trireme", "parameters": {"priority": "exploration"}},
+            {"type": "city_set_citizens", "target": {"7,5": true}, "parameters": {}}
+          ]
+        }
+      ]
+    }
+  }
+}
