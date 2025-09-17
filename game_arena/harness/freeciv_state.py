@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections import OrderedDict
 from dataclasses import replace
-from typing import (Any, Dict, Iterable, List, Mapping, Optional, Sequence,
-                    Tuple)
+from typing import (Any, ClassVar, Dict, Iterable, List, Mapping, Optional,
+                    Sequence, Tuple)
 
-from pydantic import BaseModel, Field, validator, model_validator
-from typing import ClassVar
-import json
-import re
+from pydantic import BaseModel, Field, model_validator, validator
 
 try:  # pragma: no cover - optional dependency
     import pyspiel  # type: ignore
@@ -46,8 +44,10 @@ _GameStateBase = pyspiel.State if pyspiel is not None else _FallbackGameState  #
 
 if pyspiel is not None:
     try:
-        _PY_SPIEL_DUMMY_GAME = pyspiel.load_game('tic_tac_toe')
-    except Exception:  # pragma: no cover - defensive fallback when OpenSpiel is misconfigured
+        _PY_SPIEL_DUMMY_GAME = pyspiel.load_game("tic_tac_toe")
+    except (
+        Exception
+    ):  # pragma: no cover - defensive fallback when OpenSpiel is misconfigured
         _PY_SPIEL_DUMMY_GAME = None
 else:
     _PY_SPIEL_DUMMY_GAME = None
@@ -79,9 +79,9 @@ THREAT_ANALYSIS_CACHE_SIZE = 25
 
 # Detail level thresholds for observations
 DETAIL_LEVEL_TOKENS = {
-    'basic': 500,
-    'medium': 1500,
-    'full': 3000,
+    "basic": 500,
+    "medium": 1500,
+    "full": 3000,
 }
 
 
@@ -142,8 +142,10 @@ def _calculate_deep_size(obj: Any, seen: Optional[set] = None) -> int:
     size = sys.getsizeof(obj)
 
     if isinstance(obj, dict):
-        size += sum(_calculate_deep_size(k, seen) + _calculate_deep_size(v, seen)
-                   for k, v in obj.items())
+        size += sum(
+            _calculate_deep_size(k, seen) + _calculate_deep_size(v, seen)
+            for k, v in obj.items()
+        )
     elif isinstance(obj, (list, tuple, set)):
         size += sum(_calculate_deep_size(item, seen) for item in obj)
 
@@ -188,15 +190,23 @@ def _safe_int_conversion(
         try:
             value = int(value)
         except ValueError:
-            raise ValueError(f"Invalid {field_name}: cannot convert '{value}' to integer")
+            raise ValueError(
+                f"Invalid {field_name}: cannot convert '{value}' to integer"
+            )
     elif not isinstance(value, int):
-        raise ValueError(f"Invalid {field_name}: must be an integer, got {type(value).__name__}")
+        raise ValueError(
+            f"Invalid {field_name}: must be an integer, got {type(value).__name__}"
+        )
 
     if not allow_negative and value < 0:
-        raise ValueError(f"Invalid {field_name}: negative values not allowed, got {value}")
+        raise ValueError(
+            f"Invalid {field_name}: negative values not allowed, got {value}"
+        )
 
     if value > max_value:
-        raise ValueError(f"Invalid {field_name}: exceeds maximum value {max_value}, got {value}")
+        raise ValueError(
+            f"Invalid {field_name}: exceeds maximum value {max_value}, got {value}"
+        )
 
     return value
 
@@ -213,21 +223,21 @@ def _validate_state_structure(raw_state: Mapping[str, Any]) -> None:
     """
     _validate_state_size(raw_state)
 
-    required_fields = ['game', 'map', 'players', 'units', 'cities']
+    required_fields = ["game", "map", "players", "units", "cities"]
     for field in required_fields:
         if field not in raw_state:
             raise ValueError(f"Missing required field: {field}")
 
     # Validate field types
-    if not isinstance(raw_state['game'], dict):
+    if not isinstance(raw_state["game"], dict):
         raise TypeError("'game' field must be a dictionary")
-    if not isinstance(raw_state['map'], dict):
+    if not isinstance(raw_state["map"], dict):
         raise TypeError("'map' field must be a dictionary")
-    if not isinstance(raw_state['players'], list):
+    if not isinstance(raw_state["players"], list):
         raise TypeError("'players' field must be a list")
-    if not isinstance(raw_state['units'], list):
+    if not isinstance(raw_state["units"], list):
         raise TypeError("'units' field must be a list")
-    if not isinstance(raw_state['cities'], list):
+    if not isinstance(raw_state["cities"], list):
         raise TypeError("'cities' field must be a list")
 
 
@@ -269,77 +279,137 @@ def _safe_json_dumps(obj: Any, max_depth: int = MAX_JSON_DEPTH) -> str:
 class FreeCivAction(BaseModel):
     """Represents a normalized FreeCiv action with enhanced parsing and validation.
 
-    Example:
-        FreeCivAction(
-            action_type="unit_move",
-            actor_id=101,
-            target={"x": 3, "y": 4},
-            parameters={"direction": "NE"},
-            source="unit",
-        )
+    This class provides a structured representation of FreeCiv game actions with
+    comprehensive validation, parsing capabilities, and strategic scoring.
+
+    Attributes:
+        action_type: The type of action (e.g., "unit_move", "city_production")
+        actor_id: The ID of the unit, city, or player performing the action
+        target: Optional target information (coordinates, target IDs, etc.)
+        parameters: Additional action parameters
+        source: The source type ("unit", "city", or "player")
+        confidence: Parser confidence score (0.0-1.0)
+        parse_method: Method used for parsing ("json", "natural_language", etc.)
+        strategic_score: Strategic importance score for action prioritization
+
+    Strategic Score Calculation:
+        The strategic_score field represents the calculated importance of an action
+        for AI decision-making. It's computed based on multiple factors:
+
+        - Game phase (early/mid/late game): +0.0 to +0.3
+        - Unit/city importance: +0.0 to +0.2
+        - Threat analysis: +0.0 to +0.3 (defensive actions get higher scores)
+        - Economic impact: +0.0 to +0.2 (production, research actions)
+
+        Total range: 0.0 to 1.0, where higher scores indicate more strategic value.
+        Actions with scores above 0.6 are considered high priority.
+
+    Examples:
+        Basic unit movement:
+        >>> action = FreeCivAction(
+        ...     action_type="unit_move",
+        ...     actor_id=101,
+        ...     target={"x": 3, "y": 4},
+        ...     source="unit"
+        ... )
+
+        City production with strategic scoring:
+        >>> action = FreeCivAction(
+        ...     action_type="city_production",
+        ...     actor_id=301,
+        ...     target={"value": "warriors"},
+        ...     source="city",
+        ...     strategic_score=0.8  # High priority military production
+        ... )
+
+        Creating from JSON:
+        >>> json_data = '{"action": "unit_attack", "unit": 102, "target": {"id": 203}}'
+        >>> action = FreeCivAction.from_json(json_data)
+
+        Creating from natural language:
+        >>> action = FreeCivAction.from_natural_language(
+        ...     "move settlers to position 5,7",
+        ...     game_state
+        ... )
     """
 
     action_type: str = Field(..., min_length=1, max_length=50)
     actor_id: int = Field(..., ge=0, le=MAX_UNIT_ID)
     target: Optional[Dict[str, Any]] = None
     parameters: Dict[str, Any] = Field(default_factory=dict)
-    source: str = Field(..., pattern=r'^(unit|city|player)$')
+    source: str = Field(..., pattern=r"^(unit|city|player)$")
 
     # Metadata for parsing and optimization
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    parse_method: str = Field(default="direct", max_length=20)
-    strategic_score: float = Field(default=0.0)
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Parser confidence score (0.0=low, 1.0=high confidence)",
+    )
+    parse_method: str = Field(
+        default="direct",
+        max_length=20,
+        description="Parsing method used: 'json', 'natural_language', 'regex', 'fuzzy'",
+    )
+    strategic_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Strategic importance score for action prioritization (0.0-1.0)",
+    )
 
     # Packet ID mappings following FreeCiv protocol
     PACKET_MAPPINGS: ClassVar[Dict[str, int]] = {
-        "unit_move": 31,              # PACKET_UNIT_ORDERS
-        "unit_attack": 31,            # PACKET_UNIT_ORDERS
-        "unit_fortify": 31,           # PACKET_UNIT_ORDERS
-        "unit_explore": 31,           # PACKET_UNIT_ORDERS
-        "unit_build_improvement": 31, # PACKET_UNIT_ORDERS
-        "unit_build_city": 31,        # PACKET_UNIT_ORDERS
-        "city_production": 63,        # PACKET_CITY_CHANGE
-        "city_build_improvement": 63, # PACKET_CITY_CHANGE
-        "city_celebrate": 63,         # PACKET_CITY_CHANGE
-        "tech_research": 87,          # PACKET_PLAYER_RESEARCH
-        "diplomacy_init": 120,        # PACKET_DIPLOMACY_INIT
+        "unit_move": 31,  # PACKET_UNIT_ORDERS
+        "unit_attack": 31,  # PACKET_UNIT_ORDERS
+        "unit_fortify": 31,  # PACKET_UNIT_ORDERS
+        "unit_explore": 31,  # PACKET_UNIT_ORDERS
+        "unit_build_improvement": 31,  # PACKET_UNIT_ORDERS
+        "unit_build_city": 31,  # PACKET_UNIT_ORDERS
+        "city_production": 63,  # PACKET_CITY_CHANGE
+        "city_build_improvement": 63,  # PACKET_CITY_CHANGE
+        "city_celebrate": 63,  # PACKET_CITY_CHANGE
+        "tech_research": 87,  # PACKET_PLAYER_RESEARCH
+        "diplomacy_init": 120,  # PACKET_DIPLOMACY_INIT
     }
 
     class Config:
         validate_assignment = True
         extra = "forbid"
 
-    @validator('action_type')
+    @validator("action_type")
     def validate_action_type(cls, v):
         """Validate action type against known FreeCiv actions."""
-        valid_prefixes = ['unit_', 'city_', 'tech_', 'diplomacy_']
+        valid_prefixes = ["unit_", "city_", "tech_", "diplomacy_"]
 
         # Allow test action types and special cases
-        if v.startswith(('test_', 'invalid_', 'unsupported_')):
+        if v.startswith(("test_", "invalid_", "unsupported_")):
             return v
 
         if not any(v.startswith(prefix) for prefix in valid_prefixes):
-            raise ValueError(f'Invalid action type: {v}. Must start with {valid_prefixes}')
+            raise ValueError(
+                f"Invalid action type: {v}. Must start with {valid_prefixes}"
+            )
         return v
 
-    @validator('target')
+    @validator("target")
     def validate_target(cls, v, values):
         """Validate target structure based on action type."""
-        action_type = values.get('action_type', '')
+        action_type = values.get("action_type", "")
 
-        if action_type.startswith('unit_move') and v:
-            if not ('x' in v and 'y' in v):
-                raise ValueError('Unit move action requires x,y coordinates in target')
-            if not isinstance(v['x'], int) or not isinstance(v['y'], int):
-                raise ValueError('Target coordinates must be integers')
+        if action_type.startswith("unit_move") and v:
+            if not ("x" in v and "y" in v):
+                raise ValueError("Unit move action requires x,y coordinates in target")
+            if not isinstance(v["x"], int) or not isinstance(v["y"], int):
+                raise ValueError("Target coordinates must be integers")
 
-        elif action_type.startswith('unit_attack') and v:
-            if 'id' not in v:
-                raise ValueError('Unit attack action requires target id')
+        elif action_type.startswith("unit_attack") and v:
+            if "id" not in v:
+                raise ValueError("Unit attack action requires target id")
 
-        elif action_type.startswith('city_production') and v:
-            if not ('value' in v or 'id' in v or 'name' in v):
-                raise ValueError('City production action requires target value/id/name')
+        elif action_type.startswith("city_production") and v:
+            if not ("value" in v or "id" in v or "name" in v):
+                raise ValueError("City production action requires target value/id/name")
 
         return v
 
@@ -364,18 +434,18 @@ class FreeCivAction(BaseModel):
             packet["city_id"] = self.actor_id
             if self.target:
                 packet["value"] = (
-                    self.target.get("value") or
-                    self.target.get("id") or
-                    self.target.get("name")
+                    self.target.get("value")
+                    or self.target.get("id")
+                    or self.target.get("name")
                 )
 
         elif self.action_type.startswith("tech_"):
             packet["player_id"] = self.actor_id
             if self.target:
                 packet["tech"] = (
-                    self.target.get("value") or
-                    self.target.get("tech") or
-                    self.target.get("name")
+                    self.target.get("value")
+                    or self.target.get("tech")
+                    or self.target.get("name")
                 )
 
         # Add parameters
@@ -402,8 +472,54 @@ class FreeCivAction(BaseModel):
         return 0  # Unknown packet type
 
     @classmethod
-    def from_json(cls, json_data: str | Dict[str, Any]) -> 'FreeCivAction':
-        """Create FreeCivAction from JSON data following Pydantic patterns."""
+    def from_json(cls, json_data: str | Dict[str, Any]) -> "FreeCivAction":
+        """Create FreeCivAction from JSON data following Pydantic patterns.
+
+        This method handles various JSON formats and field name variations
+        commonly found in LLM responses and API calls.
+
+        Args:
+            json_data: JSON string or dictionary containing action data
+
+        Returns:
+            FreeCivAction instance with parsed data
+
+        Raises:
+            ValueError: If JSON is malformed or required fields are missing
+
+        Supported JSON formats:
+            Basic format:
+            {
+                "action": "unit_move",
+                "unit": 101,
+                "to": [3, 4]
+            }
+
+            Alternative format:
+            {
+                "type": "city_production",
+                "city": 301,
+                "target": {"value": "warriors"}
+            }
+
+            Comprehensive format:
+            {
+                "action_type": "unit_attack",
+                "actor_id": 102,
+                "target": {"id": 203},
+                "parameters": {"damage_type": "melee"},
+                "source": "unit"
+            }
+
+        Examples:
+            >>> action = FreeCivAction.from_json('{"action": "unit_move", "unit": 101, "to": [2, 3]}')
+            >>> action.action_type
+            'unit_move'
+            >>> action.actor_id
+            101
+            >>> action.target
+            {'x': 2, 'y': 3}
+        """
         if isinstance(json_data, str):
             try:
                 data = json.loads(json_data)
@@ -414,16 +530,14 @@ class FreeCivAction(BaseModel):
 
         # Map common JSON field variations to our schema
         action_type = (
-            data.get("action") or
-            data.get("type") or
-            data.get("action_type", "")
+            data.get("action") or data.get("type") or data.get("action_type", "")
         )
 
         actor_id = (
-            data.get("unit") or
-            data.get("actor") or
-            data.get("city") or
-            data.get("actor_id", 0)
+            data.get("unit")
+            or data.get("actor")
+            or data.get("city")
+            or data.get("actor_id", 0)
         )
 
         # Handle target variations
@@ -444,12 +558,67 @@ class FreeCivAction(BaseModel):
             target=target,
             parameters=parameters,
             source=data.get("source", "unit"),
-            parse_method="json"
+            parse_method="json",
         )
 
     @classmethod
-    def from_natural_language(cls, text: str, game_state: 'FreeCivState') -> Optional['FreeCivAction']:
-        """Create FreeCivAction from natural language text."""
+    def from_natural_language(
+        cls, text: str, game_state: "FreeCivState"
+    ) -> Optional["FreeCivAction"]:
+        """Create FreeCivAction from natural language text.
+
+        This method uses pattern matching to extract actions from human-readable
+        text, supporting various phrasings and formats.
+
+        Args:
+            text: Natural language description of the action
+            game_state: Current game state for context and ID resolution
+
+        Returns:
+            FreeCivAction instance if parsing succeeds, None otherwise
+
+        Supported patterns:
+            Unit movement:
+            - "move unit 101 to 3,4"
+            - "move settlers to (5,7)"
+            - "warriors moves to 2,8"
+
+            Unit attacks:
+            - "attack unit 203 with unit 102"
+            - "unit 102 attacks unit 203"
+            - "warriors attack enemy"
+
+            City production:
+            - "build warriors in city 301"
+            - "city 301 produces granary"
+            - "produce settlers in Rome"
+
+            Technology research:
+            - "research Bronze Working"
+            - "study Mathematics"
+            - "learn Pottery"
+
+            Unit actions:
+            - "fortify unit 102"
+            - "unit 105 explores"
+            - "send 104 exploring"
+
+        Examples:
+            >>> game_state = create_game_state()
+            >>> action = FreeCivAction.from_natural_language(
+            ...     "move settlers to position 5,7",
+            ...     game_state
+            ... )
+            >>> action.action_type if action else None
+            'unit_move'
+
+            >>> action = FreeCivAction.from_natural_language(
+            ...     "build warriors in Rome",
+            ...     game_state
+            ... )
+            >>> action.action_type if action else None
+            'city_production'
+        """
         text = text.lower().strip()
 
         # Try to extract action components using regex patterns
@@ -502,8 +671,13 @@ class FreeCivAction(BaseModel):
         return None
 
     @classmethod
-    def _build_action_from_match(cls, action_type: str, groups: Tuple,
-                                original_text: str, game_state: 'FreeCivState') -> Optional['FreeCivAction']:
+    def _build_action_from_match(
+        cls,
+        action_type: str,
+        groups: Tuple,
+        original_text: str,
+        game_state: "FreeCivState",
+    ) -> Optional["FreeCivAction"]:
         """Build action from regex match groups."""
         if action_type == "unit_move":
             if len(groups) >= 3:
@@ -521,7 +695,7 @@ class FreeCivAction(BaseModel):
                         action_type=action_type,
                         actor_id=unit_id,
                         target={"x": x, "y": y},
-                        source="unit"
+                        source="unit",
                     )
                 except (ValueError, TypeError):
                     return None
@@ -529,14 +703,22 @@ class FreeCivAction(BaseModel):
         elif action_type == "unit_attack":
             if len(groups) >= 2:
                 try:
-                    attacker_id = int(groups[0]) if groups[0].isdigit() else cls._find_unit_by_name(groups[0], game_state)
-                    target_id = int(groups[1]) if groups[1].isdigit() else cls._find_unit_by_name(groups[1], game_state)
+                    attacker_id = (
+                        int(groups[0])
+                        if groups[0].isdigit()
+                        else cls._find_unit_by_name(groups[0], game_state)
+                    )
+                    target_id = (
+                        int(groups[1])
+                        if groups[1].isdigit()
+                        else cls._find_unit_by_name(groups[1], game_state)
+                    )
 
                     return cls(
                         action_type=action_type,
                         actor_id=attacker_id,
                         target={"id": target_id},
-                        source="unit"
+                        source="unit",
                     )
                 except (ValueError, TypeError):
                     return None
@@ -550,14 +732,18 @@ class FreeCivAction(BaseModel):
                         production = groups[0]
                     else:
                         # city X produces Y
-                        city_id = int(groups[0]) if groups[0].isdigit() else cls._find_city_by_name(groups[0], game_state)
+                        city_id = (
+                            int(groups[0])
+                            if groups[0].isdigit()
+                            else cls._find_city_by_name(groups[0], game_state)
+                        )
                         production = groups[1]
 
                     return cls(
                         action_type=action_type,
                         actor_id=city_id,
                         target={"value": production},
-                        source="city"
+                        source="city",
                     )
                 except (ValueError, TypeError):
                     return None
@@ -568,25 +754,25 @@ class FreeCivAction(BaseModel):
                     action_type=action_type,
                     actor_id=1,  # Player ID, should be passed in
                     target={"value": groups[0]},
-                    source="player"
+                    source="player",
                 )
 
         elif action_type in ["unit_fortify", "unit_explore"]:
             if len(groups) >= 1:
                 try:
-                    unit_id = int(groups[0]) if groups[0].isdigit() else cls._find_unit_by_name(groups[0], game_state)
-                    return cls(
-                        action_type=action_type,
-                        actor_id=unit_id,
-                        source="unit"
+                    unit_id = (
+                        int(groups[0])
+                        if groups[0].isdigit()
+                        else cls._find_unit_by_name(groups[0], game_state)
                     )
+                    return cls(action_type=action_type, actor_id=unit_id, source="unit")
                 except (ValueError, TypeError):
                     return None
 
         return None
 
     @staticmethod
-    def _find_unit_by_name(name: str, game_state: 'FreeCivState') -> int:
+    def _find_unit_by_name(name: str, game_state: "FreeCivState") -> int:
         """Find unit ID by unit type name."""
         for unit in game_state.units.values():
             if unit.kind.lower() == name.lower():
@@ -594,7 +780,7 @@ class FreeCivAction(BaseModel):
         raise ValueError(f"No unit found with name: {name}")
 
     @staticmethod
-    def _find_city_by_name(name: str, game_state: 'FreeCivState') -> int:
+    def _find_city_by_name(name: str, game_state: "FreeCivState") -> int:
         """Find city ID by city name."""
         for city in game_state.cities.values():
             if city.name.lower() == name.lower():
@@ -622,12 +808,16 @@ class FreeCivAction(BaseModel):
         }
 
         if self.target:
-            format_args.update({
-                "x": self.target.get("x", "?"),
-                "y": self.target.get("y", "?"),
-                "target_id": self.target.get("id", "?"),
-                "target": self.target.get("value") or self.target.get("name") or self.target.get("id", "?"),
-            })
+            format_args.update(
+                {
+                    "x": self.target.get("x", "?"),
+                    "y": self.target.get("y", "?"),
+                    "target_id": self.target.get("id", "?"),
+                    "target": self.target.get("value")
+                    or self.target.get("name")
+                    or self.target.get("id", "?"),
+                }
+            )
 
         return template.format(**format_args)
 
@@ -645,22 +835,24 @@ class FreeCivTile(BaseModel):
     pollution: bool = False
     fallout: bool = False
     owner: Optional[int] = Field(None, ge=0, le=MAX_PLAYER_ID)  # Territory ownership
-    worked_by: Optional[int] = Field(None, ge=0, le=MAX_CITY_ID)  # City working this tile
+    worked_by: Optional[int] = Field(
+        None, ge=0, le=MAX_CITY_ID
+    )  # City working this tile
 
     class Config:
         validate_assignment = True
         extra = "forbid"
 
-    @validator('unit_ids', each_item=True)
+    @validator("unit_ids", each_item=True)
     def validate_unit_ids(cls, v):
         if not (0 <= v <= MAX_UNIT_ID):
-            raise ValueError(f'Unit ID {v} exceeds maximum {MAX_UNIT_ID}')
+            raise ValueError(f"Unit ID {v} exceeds maximum {MAX_UNIT_ID}")
         return v
 
-    @validator('improvements', each_item=True)
+    @validator("improvements", each_item=True)
     def validate_improvements(cls, v):
         if len(v) > 30:  # Reasonable limit for improvement names
-            raise ValueError(f'Improvement name too long: {v}')
+            raise ValueError(f"Improvement name too long: {v}")
         return v
 
     def to_dict(self) -> Dict[str, Any]:
@@ -702,30 +894,34 @@ class FreeCivPlayer(BaseModel):
         validate_assignment = True
         extra = "forbid"
 
-    @validator('techs', each_item=True)
+    @validator("techs", each_item=True)
     def validate_techs(cls, v):
         if len(v) > 50:  # Reasonable limit for tech names
-            raise ValueError(f'Tech name too long: {v}')
+            raise ValueError(f"Tech name too long: {v}")
         return v
 
-    @validator('diplomatic_relations')
+    @validator("diplomatic_relations")
     def validate_diplomatic_relations(cls, v):
         valid_statuses = {"war", "peace", "ally", "ceasefire", "neutral"}
         for player_id, status in v.items():
             if not (0 <= player_id <= MAX_PLAYER_ID):
-                raise ValueError(f'Invalid player ID in diplomatic relations: {player_id}')
+                raise ValueError(
+                    f"Invalid player ID in diplomatic relations: {player_id}"
+                )
             if status not in valid_statuses:
-                raise ValueError(f'Invalid diplomatic status: {status}')
+                raise ValueError(f"Invalid diplomatic status: {status}")
         return v
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_rates_sum(self):
         """Validate that tax, science, and luxury rates sum to 100."""
         tax = self.tax_rate
         science = self.science_rate
         luxury = self.luxuries_rate
         if tax + science + luxury != 100:
-            raise ValueError(f'Tax, science, and luxury rates must sum to 100, got {tax + science + luxury}')
+            raise ValueError(
+                f"Tax, science, and luxury rates must sum to 100, got {tax + science + luxury}"
+            )
         return self
 
 
@@ -751,17 +947,17 @@ class FreeCivUnit(BaseModel):
         validate_assignment = True
         extra = "forbid"
 
-    @validator('position')
+    @validator("position")
     def validate_position(cls, v):
         x, y = v
         if not (0 <= x <= 10000 and 0 <= y <= 10000):
-            raise ValueError(f'Position coordinates out of bounds: {v}')
+            raise ValueError(f"Position coordinates out of bounds: {v}")
         return v
 
-    @validator('cargo_ids', each_item=True)
+    @validator("cargo_ids", each_item=True)
     def validate_cargo_ids(cls, v):
         if not (0 <= v <= MAX_UNIT_ID):
-            raise ValueError(f'Cargo unit ID {v} exceeds maximum {MAX_UNIT_ID}')
+            raise ValueError(f"Cargo unit ID {v} exceeds maximum {MAX_UNIT_ID}")
         return v
 
     def move(self, x: int, y: int) -> None:
@@ -794,17 +990,17 @@ class FreeCivCity(BaseModel):
         validate_assignment = True
         extra = "forbid"
 
-    @validator('position')
+    @validator("position")
     def validate_position(cls, v):
         x, y = v
         if not (0 <= x <= 10000 and 0 <= y <= 10000):
-            raise ValueError(f'Position coordinates out of bounds: {v}')
+            raise ValueError(f"Position coordinates out of bounds: {v}")
         return v
 
-    @validator('buildings', each_item=True)
+    @validator("buildings", each_item=True)
     def validate_buildings(cls, v):
         if len(v) > 50:  # Reasonable limit for building names
-            raise ValueError(f'Building name too long: {v}')
+            raise ValueError(f"Building name too long: {v}")
         return v
 
 
@@ -821,11 +1017,11 @@ class FreeCivMap(BaseModel):
         extra = "forbid"
         arbitrary_types_allowed = True  # Allow set type in visibility
 
-    @validator('visibility')
+    @validator("visibility")
     def validate_visibility(cls, v):
         for player_id in v.keys():
             if not (0 <= player_id <= MAX_PLAYER_ID):
-                raise ValueError(f'Invalid player ID in visibility: {player_id}')
+                raise ValueError(f"Invalid player ID in visibility: {player_id}")
         return v
 
     def visible_tiles(self, player_id: int) -> List[FreeCivTile]:
@@ -907,7 +1103,9 @@ class FreeCivState(_GameStateBase):
         self._action_cache: LRUCache = LRUCache(max_size=ACTION_CACHE_SIZE)
         self._observation_cache: LRUCache = LRUCache(max_size=OBSERVATION_CACHE_SIZE)
         self._visibility_cache: LRUCache = LRUCache(max_size=VISIBILITY_CACHE_SIZE)
-        self._threat_analysis_cache: LRUCache = LRUCache(max_size=THREAT_ANALYSIS_CACHE_SIZE)
+        self._threat_analysis_cache: LRUCache = LRUCache(
+            max_size=THREAT_ANALYSIS_CACHE_SIZE
+        )
         self._cache_version: int = 0  # Increment when state changes
 
     # ------------------------------------------------------------------
@@ -1333,7 +1531,9 @@ class FreeCivState(_GameStateBase):
         self._action_cache.set(cache_key, result)
         return [action.model_copy() for action in result]
 
-    def get_prioritized_legal_actions(self, player_id: int, max_actions: int = 20) -> List[FreeCivAction]:
+    def get_prioritized_legal_actions(
+        self, player_id: int, max_actions: int = 20
+    ) -> List[FreeCivAction]:
         """Get prioritized legal actions for LLM decision making.
 
         Reduces action space to most strategic actions following existing patterns.
@@ -1365,7 +1565,9 @@ class FreeCivState(_GameStateBase):
 
         return selected_actions[:max_actions]
 
-    def _calculate_action_strategic_score(self, action: FreeCivAction, player_id: int) -> float:
+    def _calculate_action_strategic_score(
+        self, action: FreeCivAction, player_id: int
+    ) -> float:
         """Calculate strategic importance score for an action.
 
         Args:
@@ -1379,14 +1581,14 @@ class FreeCivState(_GameStateBase):
 
         # Action type base priorities (following game strategy principles)
         action_type_scores = {
-            "unit_build_city": 10.0,     # City building is crucial early game
-            "unit_explore": 8.0,         # Exploration reveals strategic opportunities
-            "city_production": 7.0,      # Economic development
-            "unit_attack": 6.0,          # Military action
-            "unit_move": 5.0,            # Positioning
-            "tech_research": 7.0,        # Technology advancement
-            "unit_fortify": 3.0,         # Defensive positioning
-            "city_build_improvement": 6.0, # Infrastructure
+            "unit_build_city": 10.0,  # City building is crucial early game
+            "unit_explore": 8.0,  # Exploration reveals strategic opportunities
+            "city_production": 7.0,  # Economic development
+            "unit_attack": 6.0,  # Military action
+            "unit_move": 5.0,  # Positioning
+            "tech_research": 7.0,  # Technology advancement
+            "unit_fortify": 3.0,  # Defensive positioning
+            "city_build_improvement": 6.0,  # Infrastructure
         }
 
         action_type = action.action_type
@@ -1406,7 +1608,9 @@ class FreeCivState(_GameStateBase):
 
         return base_score
 
-    def _score_unit_action(self, action: FreeCivAction, unit: FreeCivUnit, player_id: int) -> float:
+    def _score_unit_action(
+        self, action: FreeCivAction, unit: FreeCivUnit, player_id: int
+    ) -> float:
         """Score unit-specific actions based on unit state and context."""
         bonus = 0.0
 
@@ -1440,7 +1644,9 @@ class FreeCivState(_GameStateBase):
 
         return bonus
 
-    def _score_city_action(self, action: FreeCivAction, city: FreeCivCity, player_id: int) -> float:
+    def _score_city_action(
+        self, action: FreeCivAction, city: FreeCivCity, player_id: int
+    ) -> float:
         """Score city-specific actions based on city state."""
         bonus = 0.0
 
@@ -1486,8 +1692,9 @@ class FreeCivState(_GameStateBase):
 
         return bonus
 
-    def _ensure_action_diversity(self, scored_actions: List[Tuple[float, FreeCivAction]],
-                                max_actions: int) -> List[FreeCivAction]:
+    def _ensure_action_diversity(
+        self, scored_actions: List[Tuple[float, FreeCivAction]], max_actions: int
+    ) -> List[FreeCivAction]:
         """Ensure diversity in selected actions to avoid all being same type.
 
         Args:
@@ -1950,7 +2157,9 @@ class FreeCivState(_GameStateBase):
             core_observation["tactical"] = tactical_summary
             if detail_level >= 2:  # More details
                 core_observation["tactical"]["priority_units"] = (
-                    self._get_priority_units(friendly_units, enemy_units)[:MAX_PRIORITY_UNITS]
+                    self._get_priority_units(friendly_units, enemy_units)[
+                        :MAX_PRIORITY_UNITS
+                    ]
                 )
                 if detail_level >= 3:  # Full details
                     core_observation["tactical"]["visible_enemy_units"] = enemy_units[
@@ -1967,7 +2176,9 @@ class FreeCivState(_GameStateBase):
         legal_actions = self.get_legal_actions(player_id)
         core_observation["actions"] = {"count": len(legal_actions)}
 
-        if remaining_tokens > MIN_TOKENS_FOR_ACTION_DETAILS:  # Include action details if space permits
+        if (
+            remaining_tokens > MIN_TOKENS_FOR_ACTION_DETAILS
+        ):  # Include action details if space permits
             action_types = {}
             for action in legal_actions[:MAX_ACTION_TYPES_DETAIL]:
                 action_types[action.action_type] = (
@@ -2115,11 +2326,11 @@ class FreeCivState(_GameStateBase):
 
     def _determine_detail_level(self, remaining_tokens: int) -> int:
         """Determine level of detail based on remaining token budget."""
-        if remaining_tokens > DETAIL_LEVEL_TOKENS['full']:
+        if remaining_tokens > DETAIL_LEVEL_TOKENS["full"]:
             return 3  # Full details
-        elif remaining_tokens > DETAIL_LEVEL_TOKENS['medium']:
+        elif remaining_tokens > DETAIL_LEVEL_TOKENS["medium"]:
             return 2  # Medium details
-        elif remaining_tokens > DETAIL_LEVEL_TOKENS['basic']:
+        elif remaining_tokens > DETAIL_LEVEL_TOKENS["basic"]:
             return 1  # Basic details
         else:
             return 0  # Minimal details
