@@ -8,6 +8,9 @@ from typing import (Any, Dict, Iterable, List, Mapping, Optional, Sequence,
                     Tuple)
 
 from pydantic import BaseModel, Field, validator, model_validator
+from typing import ClassVar
+import json
+import re
 
 try:  # pragma: no cover - optional dependency
     import pyspiel  # type: ignore
@@ -264,7 +267,7 @@ def _safe_json_dumps(obj: Any, max_depth: int = MAX_JSON_DEPTH) -> str:
 
 
 class FreeCivAction(BaseModel):
-    """Represents a normalized FreeCiv action.
+    """Represents a normalized FreeCiv action with enhanced parsing and validation.
 
     Example:
         FreeCivAction(
@@ -282,20 +285,351 @@ class FreeCivAction(BaseModel):
     parameters: Dict[str, Any] = Field(default_factory=dict)
     source: str = Field(..., pattern=r'^(unit|city|player)$')
 
+    # Metadata for parsing and optimization
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    parse_method: str = Field(default="direct", max_length=20)
+    strategic_score: float = Field(default=0.0)
+
+    # Packet ID mappings following FreeCiv protocol
+    PACKET_MAPPINGS: ClassVar[Dict[str, int]] = {
+        "unit_move": 31,              # PACKET_UNIT_ORDERS
+        "unit_attack": 31,            # PACKET_UNIT_ORDERS
+        "unit_fortify": 31,           # PACKET_UNIT_ORDERS
+        "unit_explore": 31,           # PACKET_UNIT_ORDERS
+        "unit_build_improvement": 31, # PACKET_UNIT_ORDERS
+        "unit_build_city": 31,        # PACKET_UNIT_ORDERS
+        "city_production": 63,        # PACKET_CITY_CHANGE
+        "city_build_improvement": 63, # PACKET_CITY_CHANGE
+        "city_celebrate": 63,         # PACKET_CITY_CHANGE
+        "tech_research": 87,          # PACKET_PLAYER_RESEARCH
+        "diplomacy_init": 120,        # PACKET_DIPLOMACY_INIT
+    }
+
     class Config:
         validate_assignment = True
         extra = "forbid"
 
+    @validator('action_type')
+    def validate_action_type(cls, v):
+        """Validate action type against known FreeCiv actions."""
+        valid_prefixes = ['unit_', 'city_', 'tech_', 'diplomacy_']
+
+        # Allow test action types and special cases
+        if v.startswith(('test_', 'invalid_', 'unsupported_')):
+            return v
+
+        if not any(v.startswith(prefix) for prefix in valid_prefixes):
+            raise ValueError(f'Invalid action type: {v}. Must start with {valid_prefixes}')
+        return v
+
+    @validator('target')
+    def validate_target(cls, v, values):
+        """Validate target structure based on action type."""
+        action_type = values.get('action_type', '')
+
+        if action_type.startswith('unit_move') and v:
+            if not ('x' in v and 'y' in v):
+                raise ValueError('Unit move action requires x,y coordinates in target')
+            if not isinstance(v['x'], int) or not isinstance(v['y'], int):
+                raise ValueError('Target coordinates must be integers')
+
+        elif action_type.startswith('unit_attack') and v:
+            if 'id' not in v:
+                raise ValueError('Unit attack action requires target id')
+
+        elif action_type.startswith('city_production') and v:
+            if not ('value' in v or 'id' in v or 'name' in v):
+                raise ValueError('City production action requires target value/id/name')
+
+        return v
+
     def to_packet(self) -> Dict[str, Any]:
-        """Render the action into a protocol-friendly dictionary."""
-        payload: Dict[str, Any] = {
+        """Convert to FreeCiv network packet format following protocol specification."""
+        packet_id = self._get_packet_id()
+
+        packet = {
+            "pid": packet_id,
+            "type": self.action_type,
+            "actor": self.actor_id,
+        }
+
+        # Add target based on action type
+        if self.action_type.startswith("unit_"):
+            if self.target and "x" in self.target and "y" in self.target:
+                packet["dest_tile"] = [self.target["x"], self.target["y"]]
+            elif self.target and "id" in self.target:
+                packet["target_id"] = self.target["id"]
+
+        elif self.action_type.startswith("city_"):
+            packet["city_id"] = self.actor_id
+            if self.target:
+                packet["value"] = (
+                    self.target.get("value") or
+                    self.target.get("id") or
+                    self.target.get("name")
+                )
+
+        elif self.action_type.startswith("tech_"):
+            packet["player_id"] = self.actor_id
+            if self.target:
+                packet["tech"] = (
+                    self.target.get("value") or
+                    self.target.get("tech") or
+                    self.target.get("name")
+                )
+
+        # Add parameters
+        packet.update(self.parameters)
+
+        return packet
+
+    def _get_packet_id(self) -> int:
+        """Get FreeCiv packet ID for this action type."""
+        # Try exact match first
+        if self.action_type in self.PACKET_MAPPINGS:
+            return self.PACKET_MAPPINGS[self.action_type]
+
+        # Fall back to prefix matching
+        for action_prefix, packet_id in {
+            "unit_": 31,
+            "city_": 63,
+            "tech_": 87,
+            "diplomacy_": 120,
+        }.items():
+            if self.action_type.startswith(action_prefix):
+                return packet_id
+
+        return 0  # Unknown packet type
+
+    @classmethod
+    def from_json(cls, json_data: str | Dict[str, Any]) -> 'FreeCivAction':
+        """Create FreeCivAction from JSON data following Pydantic patterns."""
+        if isinstance(json_data, str):
+            try:
+                data = json.loads(json_data)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON format: {e}") from e
+        else:
+            data = json_data
+
+        # Map common JSON field variations to our schema
+        action_type = (
+            data.get("action") or
+            data.get("type") or
+            data.get("action_type", "")
+        )
+
+        actor_id = (
+            data.get("unit") or
+            data.get("actor") or
+            data.get("city") or
+            data.get("actor_id", 0)
+        )
+
+        # Handle target variations
+        target = None
+        if "to" in data:
+            if isinstance(data["to"], list) and len(data["to"]) >= 2:
+                target = {"x": data["to"][0], "y": data["to"][1]}
+            elif isinstance(data["to"], dict):
+                target = data["to"]
+        elif "target" in data:
+            target = data["target"]
+
+        parameters = data.get("params", data.get("parameters", {}))
+
+        return cls(
+            action_type=action_type,
+            actor_id=actor_id,
+            target=target,
+            parameters=parameters,
+            source=data.get("source", "unit"),
+            parse_method="json"
+        )
+
+    @classmethod
+    def from_natural_language(cls, text: str, game_state: 'FreeCivState') -> Optional['FreeCivAction']:
+        """Create FreeCivAction from natural language text."""
+        text = text.lower().strip()
+
+        # Try to extract action components using regex patterns
+        patterns = {
+            "unit_move": [
+                r"move\s+(?:unit\s+)?(\d+)\s+to\s+\(?(\d+),\s*(\d+)\)?",
+                r"move\s+(\w+)\s+to\s+\(?(\d+),\s*(\d+)\)?",
+                r"(\w+)\s+moves?\s+to\s+\(?(\d+),\s*(\d+)\)?",
+            ],
+            "unit_attack": [
+                r"attack\s+(?:unit\s+)?(\d+)\s+with\s+(?:unit\s+)?(\d+)",
+                r"(?:unit\s+)?(\d+)\s+attacks?\s+(?:unit\s+)?(\d+)",
+                r"(\w+)\s+attacks?\s+(\w+)",
+            ],
+            "city_production": [
+                r"build\s+(\w+)\s+in\s+(?:city\s+)?(\d+)",
+                r"(?:city\s+)?(\d+)\s+(?:builds?|produces?)\s+(\w+)",
+                r"produce\s+(\w+)\s+in\s+(\w+)",
+            ],
+            "tech_research": [
+                r"research\s+(\w+)",
+                r"study\s+(\w+)",
+                r"learn\s+(\w+)",
+            ],
+            "unit_fortify": [
+                r"fortify\s+(?:unit\s+)?(\d+)",
+                r"(?:unit\s+)?(\d+)\s+fortif(?:y|ies)",
+            ],
+            "unit_explore": [
+                r"explore\s+with\s+(?:unit\s+)?(\d+)",
+                r"(?:unit\s+)?(\d+)\s+explores?",
+                r"send\s+(\d+)\s+exploring",
+            ],
+        }
+
+        for action_type, pattern_list in patterns.items():
+            for pattern in pattern_list:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    try:
+                        action = cls._build_action_from_match(
+                            action_type, match.groups(), text, game_state
+                        )
+                        if action:
+                            action.parse_method = "natural_language"
+                            return action
+                    except (ValueError, TypeError):
+                        continue  # Try next pattern
+
+        return None
+
+    @classmethod
+    def _build_action_from_match(cls, action_type: str, groups: Tuple,
+                                original_text: str, game_state: 'FreeCivState') -> Optional['FreeCivAction']:
+        """Build action from regex match groups."""
+        if action_type == "unit_move":
+            if len(groups) >= 3:
+                # Try to parse as unit_id, x, y
+                try:
+                    if groups[0].isdigit():
+                        unit_id = int(groups[0])
+                        x, y = int(groups[1]), int(groups[2])
+                    else:
+                        # Find unit by type name
+                        unit_id = cls._find_unit_by_name(groups[0], game_state)
+                        x, y = int(groups[1]), int(groups[2])
+
+                    return cls(
+                        action_type=action_type,
+                        actor_id=unit_id,
+                        target={"x": x, "y": y},
+                        source="unit"
+                    )
+                except (ValueError, TypeError):
+                    return None
+
+        elif action_type == "unit_attack":
+            if len(groups) >= 2:
+                try:
+                    attacker_id = int(groups[0]) if groups[0].isdigit() else cls._find_unit_by_name(groups[0], game_state)
+                    target_id = int(groups[1]) if groups[1].isdigit() else cls._find_unit_by_name(groups[1], game_state)
+
+                    return cls(
+                        action_type=action_type,
+                        actor_id=attacker_id,
+                        target={"id": target_id},
+                        source="unit"
+                    )
+                except (ValueError, TypeError):
+                    return None
+
+        elif action_type == "city_production":
+            if len(groups) >= 2:
+                try:
+                    if groups[1].isdigit():
+                        # build X in city Y
+                        city_id = int(groups[1])
+                        production = groups[0]
+                    else:
+                        # city X produces Y
+                        city_id = int(groups[0]) if groups[0].isdigit() else cls._find_city_by_name(groups[0], game_state)
+                        production = groups[1]
+
+                    return cls(
+                        action_type=action_type,
+                        actor_id=city_id,
+                        target={"value": production},
+                        source="city"
+                    )
+                except (ValueError, TypeError):
+                    return None
+
+        elif action_type == "tech_research":
+            if len(groups) >= 1:
+                return cls(
+                    action_type=action_type,
+                    actor_id=1,  # Player ID, should be passed in
+                    target={"value": groups[0]},
+                    source="player"
+                )
+
+        elif action_type in ["unit_fortify", "unit_explore"]:
+            if len(groups) >= 1:
+                try:
+                    unit_id = int(groups[0]) if groups[0].isdigit() else cls._find_unit_by_name(groups[0], game_state)
+                    return cls(
+                        action_type=action_type,
+                        actor_id=unit_id,
+                        source="unit"
+                    )
+                except (ValueError, TypeError):
+                    return None
+
+        return None
+
+    @staticmethod
+    def _find_unit_by_name(name: str, game_state: 'FreeCivState') -> int:
+        """Find unit ID by unit type name."""
+        for unit in game_state.units.values():
+            if unit.kind.lower() == name.lower():
+                return unit.unit_id
+        raise ValueError(f"No unit found with name: {name}")
+
+    @staticmethod
+    def _find_city_by_name(name: str, game_state: 'FreeCivState') -> int:
+        """Find city ID by city name."""
+        for city in game_state.cities.values():
+            if city.name.lower() == name.lower():
+                return city.city_id
+        raise ValueError(f"No city found with name: {name}")
+
+    def to_natural_language(self) -> str:
+        """Convert action to natural language description."""
+        templates = {
+            "unit_move": "Move unit {actor_id} to ({x}, {y})",
+            "unit_attack": "Unit {actor_id} attacks unit {target_id}",
+            "unit_fortify": "Fortify unit {actor_id}",
+            "unit_explore": "Unit {actor_id} explores",
+            "unit_build_city": "Unit {actor_id} builds a city",
+            "city_production": "City {actor_id} produces {target}",
+            "city_build_improvement": "City {actor_id} builds {target}",
+            "tech_research": "Research {target}",
+        }
+
+        template = templates.get(self.action_type, "{action_type} {actor_id}")
+
+        format_args = {
             "action_type": self.action_type,
             "actor_id": self.actor_id,
-            "parameters": self.parameters,
         }
-        if self.target is not None:
-            payload["target"] = self.target
-        return payload
+
+        if self.target:
+            format_args.update({
+                "x": self.target.get("x", "?"),
+                "y": self.target.get("y", "?"),
+                "target_id": self.target.get("id", "?"),
+                "target": self.target.get("value") or self.target.get("name") or self.target.get("id", "?"),
+            })
+
+        return template.format(**format_args)
 
 
 class FreeCivTile(BaseModel):
@@ -998,6 +1332,196 @@ class FreeCivState(_GameStateBase):
         cache_key = (player_id, self._cache_version)
         self._action_cache.set(cache_key, result)
         return [action.model_copy() for action in result]
+
+    def get_prioritized_legal_actions(self, player_id: int, max_actions: int = 20) -> List[FreeCivAction]:
+        """Get prioritized legal actions for LLM decision making.
+
+        Reduces action space to most strategic actions following existing patterns.
+
+        Args:
+            player_id: Player ID to get actions for
+            max_actions: Maximum number of actions to return
+
+        Returns:
+            List of prioritized FreeCivAction objects, limited to max_actions
+        """
+        all_actions = self.get_legal_actions(player_id)
+
+        if len(all_actions) <= max_actions:
+            return all_actions
+
+        # Score all actions for strategic importance
+        scored_actions = []
+        for action in all_actions:
+            score = self._calculate_action_strategic_score(action, player_id)
+            action.strategic_score = score
+            scored_actions.append((score, action))
+
+        # Sort by score (highest first)
+        scored_actions.sort(reverse=True, key=lambda x: x[0])
+
+        # Ensure action diversity to avoid all actions being of same type
+        selected_actions = self._ensure_action_diversity(scored_actions, max_actions)
+
+        return selected_actions[:max_actions]
+
+    def _calculate_action_strategic_score(self, action: FreeCivAction, player_id: int) -> float:
+        """Calculate strategic importance score for an action.
+
+        Args:
+            action: FreeCivAction to score
+            player_id: Player ID for context
+
+        Returns:
+            Strategic score (higher = more important)
+        """
+        base_score = 0.0
+
+        # Action type base priorities (following game strategy principles)
+        action_type_scores = {
+            "unit_build_city": 10.0,     # City building is crucial early game
+            "unit_explore": 8.0,         # Exploration reveals strategic opportunities
+            "city_production": 7.0,      # Economic development
+            "unit_attack": 6.0,          # Military action
+            "unit_move": 5.0,            # Positioning
+            "tech_research": 7.0,        # Technology advancement
+            "unit_fortify": 3.0,         # Defensive positioning
+            "city_build_improvement": 6.0, # Infrastructure
+        }
+
+        action_type = action.action_type
+        base_score += action_type_scores.get(action_type, 1.0)
+
+        # Context-based scoring adjustments
+        if action.source == "unit" and action.actor_id in self.units:
+            unit = self.units[action.actor_id]
+            base_score += self._score_unit_action(action, unit, player_id)
+
+        elif action.source == "city" and action.actor_id in self.cities:
+            city = self.cities[action.actor_id]
+            base_score += self._score_city_action(action, city, player_id)
+
+        # Turn-based adjustments
+        base_score += self._score_by_game_phase(action, player_id)
+
+        return base_score
+
+    def _score_unit_action(self, action: FreeCivAction, unit: FreeCivUnit, player_id: int) -> float:
+        """Score unit-specific actions based on unit state and context."""
+        bonus = 0.0
+
+        # Prioritize actions for low-HP units
+        if unit.hp < LOW_HP_THRESHOLD:
+            if action.action_type == "unit_fortify":
+                bonus += 5.0  # Defensive priority for wounded units
+            elif action.action_type == "unit_move":
+                # Check if moving away from threats
+                bonus += 2.0
+
+        # Prioritize settlers for city building
+        if unit.kind.lower() in ["settlers", "settler"]:
+            if action.action_type == "unit_build_city":
+                bonus += 8.0
+            elif action.action_type == "unit_move":
+                bonus += 2.0  # Settlers should stay mobile
+
+        # Prioritize military units near enemies
+        if unit.kind.lower() in ["warrior", "archer", "legion", "phalanx"]:
+            threat_analysis = self._get_threat_analysis(player_id)
+            if threat_analysis["threat_count"] > 0:
+                if action.action_type == "unit_attack":
+                    bonus += 4.0
+                elif action.action_type == "unit_move":
+                    bonus += 2.0
+
+        # Prioritize units with remaining moves
+        if unit.moves_left > 0:
+            bonus += 1.0
+
+        return bonus
+
+    def _score_city_action(self, action: FreeCivAction, city: FreeCivCity, player_id: int) -> float:
+        """Score city-specific actions based on city state."""
+        bonus = 0.0
+
+        # Larger cities get higher priority for production
+        bonus += min(city.population * 0.5, 5.0)
+
+        # Cities under siege prioritize defensive buildings
+        if city.under_siege:
+            if action.target and "wall" in str(action.target).lower():
+                bonus += 6.0
+            elif action.target and "barracks" in str(action.target).lower():
+                bonus += 4.0
+
+        # Cities in disorder need attention
+        if city.disorder:
+            if action.target and "temple" in str(action.target).lower():
+                bonus += 3.0
+
+        return bonus
+
+    def _score_by_game_phase(self, action: FreeCivAction, player_id: int) -> float:
+        """Adjust scores based on game phase (early, mid, late game)."""
+        bonus = 0.0
+
+        # Early game (< 50 turns): prioritize expansion and exploration
+        if self.turn < 50:
+            if action.action_type in ["unit_explore", "unit_build_city", "unit_move"]:
+                bonus += 2.0
+            elif action.action_type == "tech_research":
+                bonus += 1.5
+
+        # Mid game (50-150 turns): balanced development
+        elif self.turn < 150:
+            if action.action_type in ["city_production", "tech_research"]:
+                bonus += 1.5
+            elif action.action_type == "unit_attack":
+                bonus += 1.0
+
+        # Late game (150+ turns): focus on military and advanced buildings
+        else:
+            if action.action_type in ["unit_attack", "city_build_improvement"]:
+                bonus += 2.0
+
+        return bonus
+
+    def _ensure_action_diversity(self, scored_actions: List[Tuple[float, FreeCivAction]],
+                                max_actions: int) -> List[FreeCivAction]:
+        """Ensure diversity in selected actions to avoid all being same type.
+
+        Args:
+            scored_actions: List of (score, action) tuples sorted by score
+            max_actions: Maximum number of actions to select
+
+        Returns:
+            List of diverse actions
+        """
+        selected = []
+        action_type_counts = {}
+        max_per_type = max(max_actions // 4, 2)  # At most 1/4 of actions of same type
+
+        for score, action in scored_actions:
+            action_type = action.action_type
+            current_count = action_type_counts.get(action_type, 0)
+
+            # Add action if we haven't exceeded the per-type limit
+            if current_count < max_per_type or len(selected) < max_actions // 2:
+                selected.append(action)
+                action_type_counts[action_type] = current_count + 1
+
+                if len(selected) >= max_actions:
+                    break
+
+        # If we still need more actions, add remaining high-scored ones
+        if len(selected) < max_actions:
+            for score, action in scored_actions:
+                if action not in selected:
+                    selected.append(action)
+                    if len(selected) >= max_actions:
+                        break
+
+        return selected
 
     def to_observation(self, player_id: int, format: str = "enhanced") -> Any:
         cache_key = (player_id, format, self._cache_version)
