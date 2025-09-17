@@ -12,17 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from absl.testing import absltest
-
 from game_arena.harness import model_registry
+from absl.testing import absltest
 
 
 class ModelRegistryTest(absltest.TestCase):
 
-    def test_build_models(self):
-        for model in model_registry.ModelRegistry:
-            model.build(api_key="test_api_key")
-
+  def test_build_models(self):
+    for model in model_registry.ModelRegistry:
+      model.build(api_key="test_api_key")
 
 if __name__ == "__main__":
-    absltest.main()
+  absltest.main()

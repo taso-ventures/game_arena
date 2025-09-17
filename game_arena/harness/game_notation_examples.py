@@ -128,5 +128,5 @@ GAME_SPECIFIC_NOTATIONS = {
         "player_map": universal_poker_player_map,
         "move_notation": universal_poker_notation,
         "state_notation": universal_poker_state_notation,
-    },
+    }
 }
