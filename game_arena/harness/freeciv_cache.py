@@ -24,213 +24,215 @@ V = TypeVar("V")  # Value type
 
 
 class LRUCache(Generic[K, V]):
-    """Thread-safe LRU (Least Recently Used) cache implementation.
+  """Thread-safe LRU (Least Recently Used) cache implementation.
 
-    This cache maintains items in order of access, automatically evicting
-    the least recently used items when the cache exceeds its maximum size.
+  This cache maintains items in order of access, automatically evicting
+  the least recently used items when the cache exceeds its maximum size.
 
-    Features:
-      - Thread-safe operations using RLock
-      - LRU eviction policy
-      - Cache hit/miss statistics
-      - Optional TTL (time-to-live) support
-      - Clear and invalidation methods
+  Features:
+    - Thread-safe operations using RLock
+    - LRU eviction policy
+    - Cache hit/miss statistics
+    - Optional TTL (time-to-live) support
+    - Clear and invalidation methods
 
-    Examples:
-      >>> cache = LRUCache[str, int](max_size=100)
-      >>> cache.set("key1", 42)
-      >>> value = cache.get("key1")  # Returns 42
-      >>> cache.get("missing")       # Returns None
-      >>> cache.get("missing", -1)   # Returns -1 (default)
+  Examples:
+    >>> cache = LRUCache[str, int](max_size=100)
+    >>> cache.set("key1", 42)
+    >>> value = cache.get("key1")  # Returns 42
+    >>> cache.get("missing")       # Returns None
+    >>> cache.get("missing", -1)   # Returns -1 (default)
+  """
+
+  def __init__(self, max_size: int = 1000, ttl_seconds: Optional[float] = None):
+    """Initialize LRU cache.
+
+    Args:
+      max_size: Maximum number of items to store
+      ttl_seconds: Optional time-to-live in seconds for cache entries
+
+    Raises:
+      ValueError: If max_size is not positive
     """
+    if max_size <= 0:
+      raise ValueError("max_size must be positive")
 
-    def __init__(self, max_size: int = 1000, ttl_seconds: Optional[float] = None):
-        """Initialize LRU cache.
+    self._max_size = max_size
+    self._ttl_seconds = ttl_seconds
+    self._cache: OrderedDict[K, tuple[V, float]] = OrderedDict()
+    self._lock = threading.RLock()
 
-        Args:
-          max_size: Maximum number of items to store
-          ttl_seconds: Optional time-to-live in seconds for cache entries
+    # Statistics
+    self._hits = 0
+    self._misses = 0
+    self._evictions = 0
 
-        Raises:
-          ValueError: If max_size is not positive
-        """
-        if max_size <= 0:
-            raise ValueError("max_size must be positive")
+  def get(self, key: K, default: Optional[V] = None) -> Optional[V]:
+    """Get value from cache, updating access order.
 
-        self._max_size = max_size
-        self._ttl_seconds = ttl_seconds
-        self._cache: OrderedDict[K, tuple[V, float]] = OrderedDict()
-        self._lock = threading.RLock()
+    Args:
+      key: Cache key to look up
+      default: Default value if key not found
 
-        # Statistics
-        self._hits = 0
-        self._misses = 0
-        self._evictions = 0
+    Returns:
+      Cached value if found and not expired, default otherwise
+    """
+    with self._lock:
+      if key not in self._cache:
+        self._misses += 1
+        return default
 
-    def get(self, key: K, default: Optional[V] = None) -> Optional[V]:
-        """Get value from cache, updating access order.
+      value, timestamp = self._cache[key]
 
-        Args:
-          key: Cache key to look up
-          default: Default value if key not found
+      # Check TTL expiration
+      if self._ttl_seconds is not None:
+        age = time.time() - timestamp
+        if age > self._ttl_seconds:
+          del self._cache[key]
+          self._misses += 1
+          return default
 
-        Returns:
-          Cached value if found and not expired, default otherwise
-        """
-        with self._lock:
-            if key not in self._cache:
-                self._misses += 1
-                return default
+      # Move to end (most recently used)
+      self._cache.move_to_end(key)
+      self._hits += 1
+      return value
 
-            value, timestamp = self._cache[key]
+  def set(self, key: K, value: V) -> None:
+    """Set value in cache, evicting oldest items if necessary.
 
-            # Check TTL expiration
-            if self._ttl_seconds is not None:
-                age = time.time() - timestamp
-                if age > self._ttl_seconds:
-                    del self._cache[key]
-                    self._misses += 1
-                    return default
+    Args:
+      key: Cache key
+      value: Value to store
+    """
+    with self._lock:
+      current_time = time.time()
 
-            # Move to end (most recently used)
-            self._cache.move_to_end(key)
-            self._hits += 1
-            return value
+      if key in self._cache:
+        # Update existing key
+        self._cache[key] = (value, current_time)
+        self._cache.move_to_end(key)
+      else:
+        # Add new key, evict if necessary
+        if len(self._cache) >= self._max_size:
+          self._cache.popitem(last=False)  # Remove oldest
+          self._evictions += 1
 
-    def set(self, key: K, value: V) -> None:
-        """Set value in cache, evicting oldest items if necessary.
+        self._cache[key] = (value, current_time)
 
-        Args:
-          key: Cache key
-          value: Value to store
-        """
-        with self._lock:
-            current_time = time.time()
+  def clear(self) -> None:
+    """Clear all cache entries."""
+    with self._lock:
+      self._cache.clear()
 
-            if key in self._cache:
-                # Update existing key
-                self._cache[key] = (value, current_time)
-                self._cache.move_to_end(key)
-            else:
-                # Add new key, evict if necessary
-                if len(self._cache) >= self._max_size:
-                    self._cache.popitem(last=False)  # Remove oldest
-                    self._evictions += 1
+  def invalidate(self, key: K) -> bool:
+    """Remove specific key from cache.
 
-                self._cache[key] = (value, current_time)
+    Args:
+      key: Key to remove
 
-    def clear(self) -> None:
-        """Clear all cache entries."""
-        with self._lock:
-            self._cache.clear()
+    Returns:
+      True if key was found and removed, False otherwise
+    """
+    with self._lock:
+      if key in self._cache:
+        del self._cache[key]
+        return True
+      return False
 
-    def invalidate(self, key: K) -> bool:
-        """Remove specific key from cache.
+  def invalidate_prefix(self, prefix: str) -> int:
+    """Remove all keys starting with given prefix.
 
-        Args:
-          key: Key to remove
+    Args:
+      prefix: Prefix to match for removal
 
-        Returns:
-          True if key was found and removed, False otherwise
-        """
-        with self._lock:
-            if key in self._cache:
-                del self._cache[key]
-                return True
-            return False
+    Returns:
+      Number of keys removed
+    """
+    with self._lock:
+      keys_to_remove = [
+          key for key in self._cache if str(key).startswith(prefix)
+      ]
+      for key in keys_to_remove:
+        del self._cache[key]
+      return len(keys_to_remove)
 
-    def invalidate_prefix(self, prefix: str) -> int:
-        """Remove all keys starting with given prefix.
+  def cleanup_expired(self) -> int:
+    """Remove expired entries based on TTL.
 
-        Args:
-          prefix: Prefix to match for removal
+    Returns:
+      Number of expired entries removed
+    """
+    if self._ttl_seconds is None:
+      return 0
 
-        Returns:
-          Number of keys removed
-        """
-        with self._lock:
-            keys_to_remove = [key for key in self._cache if str(key).startswith(prefix)]
-            for key in keys_to_remove:
-                del self._cache[key]
-            return len(keys_to_remove)
+    with self._lock:
+      current_time = time.time()
+      expired_keys = []
 
-    def cleanup_expired(self) -> int:
-        """Remove expired entries based on TTL.
+      for key, (value, timestamp) in self._cache.items():
+        age = current_time - timestamp
+        if age > self._ttl_seconds:
+          expired_keys.append(key)
 
-        Returns:
-          Number of expired entries removed
-        """
-        if self._ttl_seconds is None:
-            return 0
+      for key in expired_keys:
+        del self._cache[key]
 
-        with self._lock:
-            current_time = time.time()
-            expired_keys = []
+      return len(expired_keys)
 
-            for key, (value, timestamp) in self._cache.items():
-                age = current_time - timestamp
-                if age > self._ttl_seconds:
-                    expired_keys.append(key)
+  def __len__(self) -> int:
+    """Return current cache size."""
+    with self._lock:
+      return len(self._cache)
 
-            for key in expired_keys:
-                del self._cache[key]
+  def __contains__(self, key: K) -> bool:
+    """Check if key exists in cache (without updating access order)."""
+    with self._lock:
+      if key not in self._cache:
+        return False
 
-            return len(expired_keys)
+      # Check TTL without updating access order
+      if self._ttl_seconds is not None:
+        _, timestamp = self._cache[key]
+        age = time.time() - timestamp
+        if age > self._ttl_seconds:
+          del self._cache[key]
+          return False
 
-    def __len__(self) -> int:
-        """Return current cache size."""
-        with self._lock:
-            return len(self._cache)
+      return True
 
-    def __contains__(self, key: K) -> bool:
-        """Check if key exists in cache (without updating access order)."""
-        with self._lock:
-            if key not in self._cache:
-                return False
+  @property
+  def max_size(self) -> int:
+    """Maximum cache size."""
+    return self._max_size
 
-            # Check TTL without updating access order
-            if self._ttl_seconds is not None:
-                _, timestamp = self._cache[key]
-                age = time.time() - timestamp
-                if age > self._ttl_seconds:
-                    del self._cache[key]
-                    return False
+  @property
+  def hit_rate(self) -> float:
+    """Cache hit rate as a percentage (0.0-100.0)."""
+    with self._lock:
+      total_requests = self._hits + self._misses
+      if total_requests == 0:
+        return 0.0
+      return (self._hits / total_requests) * 100.0
 
-            return True
+  @property
+  def statistics(self) -> dict[str, Any]:
+    """Cache statistics for monitoring and debugging."""
+    with self._lock:
+      total_requests = self._hits + self._misses
+      return {
+          "size": len(self._cache),
+          "max_size": self._max_size,
+          "hits": self._hits,
+          "misses": self._misses,
+          "evictions": self._evictions,
+          "total_requests": total_requests,
+          "hit_rate_percent": self.hit_rate,
+          "ttl_seconds": self._ttl_seconds,
+      }
 
-    @property
-    def max_size(self) -> int:
-        """Maximum cache size."""
-        return self._max_size
-
-    @property
-    def hit_rate(self) -> float:
-        """Cache hit rate as a percentage (0.0-100.0)."""
-        with self._lock:
-            total_requests = self._hits + self._misses
-            if total_requests == 0:
-                return 0.0
-            return (self._hits / total_requests) * 100.0
-
-    @property
-    def statistics(self) -> dict[str, Any]:
-        """Cache statistics for monitoring and debugging."""
-        with self._lock:
-            total_requests = self._hits + self._misses
-            return {
-                "size": len(self._cache),
-                "max_size": self._max_size,
-                "hits": self._hits,
-                "misses": self._misses,
-                "evictions": self._evictions,
-                "total_requests": total_requests,
-                "hit_rate_percent": self.hit_rate,
-                "ttl_seconds": self._ttl_seconds,
-            }
-
-    def reset_statistics(self) -> None:
-        """Reset cache statistics counters."""
-        with self._lock:
-            self._hits = 0
-            self._misses = 0
-            self._evictions = 0
+  def reset_statistics(self) -> None:
+    """Reset cache statistics counters."""
+    with self._lock:
+      self._hits = 0
+      self._misses = 0
+      self._evictions = 0

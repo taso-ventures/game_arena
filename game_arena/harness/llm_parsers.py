@@ -24,10 +24,10 @@ from game_arena.harness import model_generation, parsers, tournament_util
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class InstructionConfig:
-    name: str
-    instruction: str
-    final_answer_prefix: str
-    no_action_answer: str
+  name: str
+  instruction: str
+  final_answer_prefix: str
+  no_action_answer: str
 
 
 # Game-agnostic version. Excess formatting examples may be too specific or may
@@ -180,50 +180,52 @@ FreeCivInstructionConfig_V0 = InstructionConfig(
 )
 
 
-def _parse_extractor_response(*, response: str, final_answer_prefix: str) -> str:
-    """Parses the response from the extractor LLM."""
-    # Regex captures all text following prefix on the same line:
-    final_answer_match = re.search(
-        rf"{final_answer_prefix}\s*(.*)",
-        response,
-    )
-    final_answer = final_answer_match.group(1) if final_answer_match else ""
-    if final_answer:
-        # Removes leading and trailing whitespace!
-        final_answer = final_answer.splitlines()[0].strip()
-    return final_answer
+def _parse_extractor_response(
+    *, response: str, final_answer_prefix: str
+) -> str:
+  """Parses the response from the extractor LLM."""
+  # Regex captures all text following prefix on the same line:
+  final_answer_match = re.search(
+      rf"{final_answer_prefix}\s*(.*)",
+      response,
+  )
+  final_answer = final_answer_match.group(1) if final_answer_match else ""
+  if final_answer:
+    # Removes leading and trailing whitespace!
+    final_answer = final_answer.splitlines()[0].strip()
+  return final_answer
 
 
 class LLMParser(parsers.TextParser):
-    """Parses move from a LLM response with another (separate) LLM."""
+  """Parses move from a LLM response with another (separate) LLM."""
 
-    def __init__(
-        self, model: model_generation.Model, instruction_config: InstructionConfig
-    ):
-        self._model = model
-        self._instruction_config = instruction_config
+  def __init__(
+      self, model: model_generation.Model, instruction_config: InstructionConfig
+  ):
+    self._model = model
+    self._instruction_config = instruction_config
 
-    def parse(self, parser_input: parsers.TextParserInput) -> str | None:
-        if not parser_input.text:
-            logging.warning("Empty input text for LLMParser.")
-            return None
-        extractor_response = self._model.generate_with_text_input(
-            model_input=tournament_util.ModelTextInput(
-                prompt_text=parser_input.text,
-                system_instruction=self._instruction_config.instruction,
-            )
+  def parse(self, parser_input: parsers.TextParserInput) -> str | None:
+    if not parser_input.text:
+      logging.warning("Empty input text for LLMParser.")
+      return None
+    extractor_response = self._model.generate_with_text_input(
+        model_input=tournament_util.ModelTextInput(
+            prompt_text=parser_input.text,
+            system_instruction=self._instruction_config.instruction,
         )
-        logging.info(
-            "Extractor input last line: %s", parser_input.text.splitlines()[-1]
-        )
-        logging.info(
-            "Extractor response pre-parse: %s", extractor_response.main_response
-        )
-        parsed_extractor_response = _parse_extractor_response(
-            response=extractor_response.main_response,
-            final_answer_prefix=self._instruction_config.final_answer_prefix,
-        )
-        logging.info("Extractor response post-parse: %s", parsed_extractor_response)
-        if parsed_extractor_response == self._instruction_config.no_action_answer:
-            return None
-        return parsed_extractor_response
+    )
+    logging.info(
+        "Extractor input last line: %s", parser_input.text.splitlines()[-1]
+    )
+    logging.info(
+        "Extractor response pre-parse: %s", extractor_response.main_response
+    )
+    parsed_extractor_response = _parse_extractor_response(
+        response=extractor_response.main_response,
+        final_answer_prefix=self._instruction_config.final_answer_prefix,
+    )
+    logging.info("Extractor response post-parse: %s", parsed_extractor_response)
+    if parsed_extractor_response == self._instruction_config.no_action_answer:
+      return None
+    return parsed_extractor_response
