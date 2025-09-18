@@ -15,6 +15,7 @@
 """Demo of FreeCiv, prompt generation, model generation, and parser together."""
 
 import os
+
 import termcolor
 from absl import app, flags
 
@@ -66,8 +67,7 @@ _FREECIV_WS_URL = flags.DEFINE_string(
 def main(_) -> None:
     # Set up FreeCiv client connection:
     freeciv_client = FreeCivClient(
-        server_url=_FREECIV_SERVER_URL.value,
-        ws_url=_FREECIV_WS_URL.value
+        server_url=_FREECIV_SERVER_URL.value, ws_url=_FREECIV_WS_URL.value
     )
 
     print(colored("Connecting to FreeCiv3D server...", "blue"))
@@ -97,7 +97,9 @@ def main(_) -> None:
     # Set up parser:
     match _PARSER_CHOICE.value:
         case tournament_util.ParserChoice.RULE_THEN_SOFT:
-            from game_arena.harness.freeciv_parsers import create_freeciv_parser_chain
+            from game_arena.harness.freeciv_parsers import \
+                create_freeciv_parser_chain
+
             parser = create_freeciv_parser_chain()
         case tournament_util.ParserChoice.LLM_ONLY:
             parser_model = model_generation_sdk.AIStudioModel(
@@ -111,7 +113,9 @@ def main(_) -> None:
             raise ValueError(f"Unsupported parser choice: {_PARSER_CHOICE.value}")
 
     for move_number in range(_NUM_MOVES.value):
-        print(f"\nPre-move state summary: Turn {freeciv_game_state.turn}, Phase {freeciv_game_state.phase}")
+        print(
+            f"\nPre-move state summary: Turn {freeciv_game_state.turn}, Phase {freeciv_game_state.phase}"
+        )
         print(f"Current player: {freeciv_game_state.current_player()}")
 
         if freeciv_game_state.is_terminal():
@@ -121,8 +125,12 @@ def main(_) -> None:
         print(colored(f"Commencing move {move_number}...", "green"))
 
         # 1. Generate the prompt from the game state:
-        current_player_id = freeciv_game_state.current_player() + 1  # Convert to FreeCiv player ID
-        observation = freeciv_game_state.to_observation(current_player_id, format="enhanced")
+        current_player_id = (
+            freeciv_game_state.current_player() + 1
+        )  # Convert to FreeCiv player ID
+        observation = freeciv_game_state.to_observation(
+            current_player_id, format="enhanced"
+        )
         legal_actions = freeciv_game_state.get_legal_actions(current_player_id)
 
         prompt_substitutions = {
@@ -136,16 +144,24 @@ def main(_) -> None:
         # Add strategic context from observation
         if "strategic" in observation:
             strategic_info = observation["strategic"]
-            prompt_substitutions["readable_state_str"] += f"\nScore: {strategic_info.get('scoreboard', {}).get('player', 0)}"
+            prompt_substitutions[
+                "readable_state_str"
+            ] += f"\nScore: {strategic_info.get('scoreboard', {}).get('player', 0)}"
             if strategic_info.get("economy"):
-                prompt_substitutions["readable_state_str"] += f"\nGold: {strategic_info['economy']['gold']}"
+                prompt_substitutions[
+                    "readable_state_str"
+                ] += f"\nGold: {strategic_info['economy']['gold']}"
 
         # Add tactical context
         if "tactical" in observation:
             tactical_info = observation["tactical"]
             unit_counts = tactical_info.get("unit_counts", {})
-            prompt_substitutions["readable_state_str"] += f"\nUnits: {unit_counts.get('friendly', 0)} friendly, {unit_counts.get('enemy', 0)} enemy"
-            prompt_substitutions["readable_state_str"] += f"\nThreats: {tactical_info.get('threats', 0)}"
+            prompt_substitutions[
+                "readable_state_str"
+            ] += f"\nUnits: {unit_counts.get('friendly', 0)} friendly, {unit_counts.get('enemy', 0)} enemy"
+            prompt_substitutions[
+                "readable_state_str"
+            ] += f"\nThreats: {tactical_info.get('threats', 0)}"
 
         prompt = prompt_generator.generate_prompt_with_text_only(
             prompt_template=prompt_template,
@@ -170,7 +186,9 @@ def main(_) -> None:
 
         # 3. Parse the model response:
         # Convert legal actions to strings for parser
-        legal_action_strings = [freeciv_game_state._action_to_string(action) for action in legal_actions]
+        legal_action_strings = [
+            freeciv_game_state._action_to_string(action) for action in legal_actions
+        ]
 
         parser_input = parsers.TextParserInput(
             text=response.main_response,
@@ -200,7 +218,11 @@ def main(_) -> None:
                 freeciv_client.submit_action(selected_action)
                 print(colored(f"Applied action: {selected_action.action_type}", "cyan"))
             else:
-                print(colored(f"Could not find matching action for: {parser_output}", "red"))
+                print(
+                    colored(
+                        f"Could not find matching action for: {parser_output}", "red"
+                    )
+                )
                 break
 
         except Exception as e:

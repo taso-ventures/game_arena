@@ -20,13 +20,13 @@ import json
 import os
 import sys
 import time
-from typing import Dict, Any
+from typing import Any, Dict
 
 import requests
 import termcolor
 
 # Add the parent directory to the path so we can import game_arena
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from game_arena.harness.freeciv_client import FreeCivClient
 from game_arena.harness.freeciv_state import FreeCivState
@@ -42,27 +42,42 @@ def test_http_connection(server_url: str) -> bool:
         # Test basic server status
         response = requests.get(f"{server_url}/status", timeout=10)
         if response.status_code == 200:
-            print(colored(f"✓ Server status check passed ({response.status_code})", "green"))
+            print(
+                colored(
+                    f"✓ Server status check passed ({response.status_code})", "green"
+                )
+            )
         else:
-            print(colored(f"✗ Server status check failed ({response.status_code})", "red"))
+            print(
+                colored(f"✗ Server status check failed ({response.status_code})", "red")
+            )
             return False
 
         # Test game launcher endpoint
         response = requests.post(
             f"{server_url}/civclientlauncher",
             data={"action": "new", "type": "multiplayer"},
-            timeout=10
+            timeout=10,
         )
 
         if response.status_code in [200, 201]:
-            print(colored(f"✓ Game launcher endpoint accessible ({response.status_code})", "green"))
+            print(
+                colored(
+                    f"✓ Game launcher endpoint accessible ({response.status_code})",
+                    "green",
+                )
+            )
             try:
                 result = response.json()
                 print(f"  Response: {json.dumps(result, indent=2)}")
             except:
                 print(f"  Response (non-JSON): {response.text[:200]}...")
         else:
-            print(colored(f"✗ Game launcher endpoint failed ({response.status_code})", "red"))
+            print(
+                colored(
+                    f"✗ Game launcher endpoint failed ({response.status_code})", "red"
+                )
+            )
             print(f"  Response: {response.text[:200]}...")
 
         return True
@@ -83,8 +98,9 @@ def test_websocket_connection(ws_url: str) -> bool:
     print(colored("Testing WebSocket connection...", "blue"))
 
     try:
-        import websockets
         import asyncio
+
+        import websockets
 
         async def test_ws():
             try:
@@ -101,7 +117,12 @@ def test_websocket_connection(ws_url: str) -> bool:
                     response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
                     print(colored(f"✓ Received response: {response[:100]}...", "green"))
                 except asyncio.TimeoutError:
-                    print(colored("⚠ No response received (timeout) - this may be normal", "yellow"))
+                    print(
+                        colored(
+                            "⚠ No response received (timeout) - this may be normal",
+                            "yellow",
+                        )
+                    )
 
                 await websocket.close()
                 return True
@@ -115,7 +136,11 @@ def test_websocket_connection(ws_url: str) -> bool:
         return loop.run_until_complete(test_ws())
 
     except ImportError:
-        print(colored("⚠ websockets library not available - skipping WebSocket test", "yellow"))
+        print(
+            colored(
+                "⚠ websockets library not available - skipping WebSocket test", "yellow"
+            )
+        )
         return True
     except Exception as e:
         print(colored(f"✗ WebSocket connection error: {e}", "red"))
@@ -149,7 +174,9 @@ def test_freeciv_client(server_url: str, ws_url: str) -> bool:
 
         # Test getting legal actions
         legal_actions = freeciv_state.get_legal_actions(1)
-        print(colored(f"✓ Legal actions retrieved: {len(legal_actions)} actions", "green"))
+        print(
+            colored(f"✓ Legal actions retrieved: {len(legal_actions)} actions", "green")
+        )
 
         if legal_actions:
             print("  Sample actions:")
@@ -173,6 +200,7 @@ def test_freeciv_client(server_url: str, ws_url: str) -> bool:
     except Exception as e:
         print(colored(f"✗ FreeCiv client test failed: {e}", "red"))
         import traceback
+
         print(f"  Full traceback:\n{traceback.format_exc()}")
         return False
 
@@ -183,25 +211,21 @@ def main():
     parser.add_argument(
         "--server_url",
         default=os.getenv("FREECIV_SERVER_URL", "http://localhost:8080"),
-        help="FreeCiv3D server URL"
+        help="FreeCiv3D server URL",
     )
 
     parser.add_argument(
         "--ws_url",
         default=os.getenv("FREECIV_WS_URL", "ws://localhost:4002"),
-        help="FreeCiv3D WebSocket URL"
+        help="FreeCiv3D WebSocket URL",
     )
 
     parser.add_argument(
-        "--skip_websocket",
-        action="store_true",
-        help="Skip WebSocket connection test"
+        "--skip_websocket", action="store_true", help="Skip WebSocket connection test"
     )
 
     parser.add_argument(
-        "--skip_client",
-        action="store_true",
-        help="Skip FreeCiv client test"
+        "--skip_client", action="store_true", help="Skip FreeCiv client test"
     )
 
     args = parser.parse_args()

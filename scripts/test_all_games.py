@@ -20,7 +20,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 import termcolor
 
@@ -34,7 +34,9 @@ class GameTestRunner:
         self.verbose = verbose
         self.test_results: Dict[str, Dict[str, Any]] = {}
 
-    def run_test(self, game_type: str, num_moves: int = 3, parser_choice: str = "rule_then_soft") -> bool:
+    def run_test(
+        self, game_type: str, num_moves: int = 3, parser_choice: str = "rule_then_soft"
+    ) -> bool:
         """Run a test for a specific game type.
 
         Args:
@@ -64,10 +66,7 @@ class GameTestRunner:
                 print(f"Running command: {' '.join(cmd)}")
 
             result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 minute timeout
+                cmd, capture_output=True, text=True, timeout=300  # 5 minute timeout
             )
 
             end_time = time.time()
@@ -79,17 +78,25 @@ class GameTestRunner:
                 "duration": duration,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
-                "returncode": result.returncode
+                "returncode": result.returncode,
             }
 
             if result.returncode == 0:
-                print(colored(f"✓ {game_type.title()} test PASSED ({duration:.1f}s)", "green"))
+                print(
+                    colored(
+                        f"✓ {game_type.title()} test PASSED ({duration:.1f}s)", "green"
+                    )
+                )
                 if self.verbose and result.stdout:
                     print("Output:")
                     print(result.stdout[-500:])  # Last 500 chars
                 return True
             else:
-                print(colored(f"✗ {game_type.title()} test FAILED ({duration:.1f}s)", "red"))
+                print(
+                    colored(
+                        f"✗ {game_type.title()} test FAILED ({duration:.1f}s)", "red"
+                    )
+                )
                 print(f"Return code: {result.returncode}")
                 if result.stderr:
                     print("Error output:")
@@ -103,7 +110,7 @@ class GameTestRunner:
                 "duration": 300,
                 "stdout": "",
                 "stderr": "Test timed out",
-                "returncode": -1
+                "returncode": -1,
             }
             return False
         except Exception as e:
@@ -113,7 +120,7 @@ class GameTestRunner:
                 "duration": time.time() - start_time,
                 "stdout": "",
                 "stderr": str(e),
-                "returncode": -1
+                "returncode": -1,
             }
             return False
 
@@ -131,15 +138,10 @@ class GameTestRunner:
                 sys.executable,
                 os.path.join(os.path.dirname(__file__), "run_game.py"),
                 game_type,
-                "--check_setup"
+                "--check_setup",
             ]
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
             return result.returncode == 0
 
@@ -169,10 +171,19 @@ class GameTestRunner:
                 __import__(package)
                 print(f"✓ {package} (optional)")
             except ImportError:
-                print(colored(f"⚠ {package} (optional - needed for FreeCiv WebSocket)", "yellow"))
+                print(
+                    colored(
+                        f"⚠ {package} (optional - needed for FreeCiv WebSocket)",
+                        "yellow",
+                    )
+                )
 
         if missing_deps:
-            print(colored(f"\nMissing required dependencies: {', '.join(missing_deps)}", "red"))
+            print(
+                colored(
+                    f"\nMissing required dependencies: {', '.join(missing_deps)}", "red"
+                )
+            )
             print("Install with: pip install " + " ".join(missing_deps))
             return False
 
@@ -188,7 +199,11 @@ class GameTestRunner:
         passed_tests = sum(1 for r in self.test_results.values() if r["success"])
 
         for game_type, result in self.test_results.items():
-            status = colored("PASSED", "green") if result["success"] else colored("FAILED", "red")
+            status = (
+                colored("PASSED", "green")
+                if result["success"]
+                else colored("FAILED", "red")
+            )
             duration = result["duration"]
             print(f"{game_type.ljust(15)} {status.ljust(15)} ({duration:.1f}s)")
 
@@ -213,40 +228,39 @@ def main():
         "--games",
         nargs="+",
         choices=["chess", "go", "freeciv"],
-        default=["chess", "freeciv"],  # Skip go by default as it's not fully implemented
-        help="Games to test (default: chess freeciv)"
+        default=[
+            "chess",
+            "freeciv",
+        ],  # Skip go by default as it's not fully implemented
+        help="Games to test (default: chess freeciv)",
     )
 
     parser.add_argument(
         "--num_moves",
         type=int,
         default=3,
-        help="Number of moves to test per game (default: 3)"
+        help="Number of moves to test per game (default: 3)",
     )
 
     parser.add_argument(
         "--parser_choice",
         choices=["rule_then_soft", "llm_only"],
         default="rule_then_soft",
-        help="Parser strategy to use (default: rule_then_soft)"
+        help="Parser strategy to use (default: rule_then_soft)",
     )
 
     parser.add_argument(
         "--skip_setup_check",
         action="store_true",
-        help="Skip setup checks before running tests"
+        help="Skip setup checks before running tests",
     )
 
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Verbose output"
-    )
+    parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
     parser.add_argument(
         "--sequential",
         action="store_true",
-        help="Run tests sequentially (default: sequential)"
+        help="Run tests sequentially (default: sequential)",
     )
 
     args = parser.parse_args()
@@ -276,7 +290,12 @@ def main():
                 all_setup_ok = False
 
         if not all_setup_ok:
-            print(colored("\nSetup checks failed. Please fix issues before running tests.", "red"))
+            print(
+                colored(
+                    "\nSetup checks failed. Please fix issues before running tests.",
+                    "red",
+                )
+            )
             sys.exit(1)
 
         print()

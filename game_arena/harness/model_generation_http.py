@@ -45,11 +45,15 @@ def _sanitize_url_for_logging(url: str) -> str:
         Sanitized URL with sensitive parameters redacted
     """
     # Remove common API key parameters
-    sanitized = re.sub(r'([?&])(api_key|key|token|password|secret)=[^&]*',
-                       r'\1\2=***', url, flags=re.IGNORECASE)
+    sanitized = re.sub(
+        r"([?&])(api_key|key|token|password|secret)=[^&]*",
+        r"\1\2=***",
+        url,
+        flags=re.IGNORECASE,
+    )
 
     # Remove API keys in path segments (e.g., /api/v1/API_KEY_HERE/...)
-    sanitized = re.sub(r'/[A-Za-z0-9_-]{20,}/', '/***/', sanitized)
+    sanitized = re.sub(r"/[A-Za-z0-9_-]{20,}/", "/***/", sanitized)
 
     return sanitized
 
@@ -65,13 +69,15 @@ def _sanitize_request_for_logging(request: Mapping[str, Any]) -> dict[str, Any]:
     """
     sanitized = dict(request)
     # Remove or redact sensitive headers if present
-    if 'headers' in sanitized:
-        headers = dict(sanitized['headers'])
+    if "headers" in sanitized:
+        headers = dict(sanitized["headers"])
         for header_name in headers:
-            if header_name.lower() in ['authorization', 'x-api-key', 'api-key']:
-                headers[header_name] = '***'
-        sanitized['headers'] = headers
+            if header_name.lower() in ["authorization", "x-api-key", "api-key"]:
+                headers[header_name] = "***"
+        sanitized["headers"] = headers
     return sanitized
+
+
 DEEPSEEK_THOUGHT_TAG_END = "</think>"
 
 
@@ -684,7 +690,9 @@ async def _post_request_async(
         async with session.post(
             url, json=payload, headers=headers, timeout=timeout.total_seconds()
         ) as response:
-            logging.info("Finished POST for '%s' with status: %d", name, response.status)
+            logging.info(
+                "Finished POST for '%s' with status: %d", name, response.status
+            )
             # Raise an exception for bad status codes (4xx or 5xx)
             response.raise_for_status()
 

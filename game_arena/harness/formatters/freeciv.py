@@ -30,7 +30,9 @@ def _player_string(player_id: int) -> str:
         return f"Player {player_id}"
 
 
-def _format_map_grid(freeciv_state: FreeCivState, player_id: int) -> List[List[Dict[str, Any]]]:
+def _format_map_grid(
+    freeciv_state: FreeCivState, player_id: int
+) -> List[List[Dict[str, Any]]]:
     """Convert FreeCiv map to structured grid format.
 
     Args:
@@ -59,14 +61,14 @@ def _format_map_grid(freeciv_state: FreeCivState, player_id: int) -> List[List[D
                     "owner": tile.owner,
                     "worked_by": tile.worked_by,
                     "units": tile.unit_ids,
-                    "city": tile.city_id
+                    "city": tile.city_id,
                 }
             else:
                 # Fog of war
                 tile_info = {
                     "coordinate": f"{x},{y}",
                     "terrain": "unknown",
-                    "visible": False
+                    "visible": False,
                 }
             row.append(tile_info)
         grid.append(row)
@@ -74,7 +76,9 @@ def _format_map_grid(freeciv_state: FreeCivState, player_id: int) -> List[List[D
     return grid
 
 
-def _format_units_summary(freeciv_state: FreeCivState, player_id: int) -> List[Dict[str, Any]]:
+def _format_units_summary(
+    freeciv_state: FreeCivState, player_id: int
+) -> List[Dict[str, Any]]:
     """Format units visible to player.
 
     Args:
@@ -100,14 +104,18 @@ def _format_units_summary(freeciv_state: FreeCivState, player_id: int) -> List[D
                 "veteran": unit.veteran,
                 "fortified": unit.fortified,
                 "activity": unit.activity,
-                "available_actions": len(unit.available_actions) if unit.owner == player_id else 0
+                "available_actions": (
+                    len(unit.available_actions) if unit.owner == player_id else 0
+                ),
             }
             formatted_units.append(unit_info)
 
     return formatted_units
 
 
-def _format_cities_summary(freeciv_state: FreeCivState, player_id: int) -> List[Dict[str, Any]]:
+def _format_cities_summary(
+    freeciv_state: FreeCivState, player_id: int
+) -> List[Dict[str, Any]]:
     """Format cities visible to player.
 
     Args:
@@ -139,7 +147,7 @@ def _format_cities_summary(freeciv_state: FreeCivState, player_id: int) -> List[
                     "celebrating": city.celebrating,
                     "disorder": city.disorder,
                     "under_siege": city.under_siege,
-                    "available_actions": len(city.available_actions)
+                    "available_actions": len(city.available_actions),
                 }
             else:
                 # Limited details for enemy cities
@@ -149,7 +157,7 @@ def _format_cities_summary(freeciv_state: FreeCivState, player_id: int) -> List[
                     "position": {"x": city.position[0], "y": city.position[1]},
                     "owner": city.owner,
                     "population": city.population,
-                    "enemy_city": True
+                    "enemy_city": True,
                 }
             formatted_cities.append(city_info)
 
@@ -174,12 +182,12 @@ def format_state(freeciv_state: FreeCivState, player_id: int = 1) -> str:
             "phase": freeciv_state.phase,
             "current_player": freeciv_state.current_player(),
             "is_terminal": freeciv_state.is_terminal(),
-            "scores": freeciv_state._scores
+            "scores": freeciv_state._scores,
         },
         "map_info": {
             "width": freeciv_state.map.width,
             "height": freeciv_state.map.height,
-            "grid": _format_map_grid(freeciv_state, player_id)
+            "grid": _format_map_grid(freeciv_state, player_id),
         },
         "player_info": {
             "id": player_id,
@@ -192,11 +200,11 @@ def format_state(freeciv_state: FreeCivState, player_id: int = 1) -> str:
             "research_progress": player.research_progress if player else 0,
             "government": player.government if player else None,
             "techs_count": len(player.techs) if player else 0,
-            "diplomatic_relations": player.diplomatic_relations if player else {}
+            "diplomatic_relations": player.diplomatic_relations if player else {},
         },
         "units": _format_units_summary(freeciv_state, player_id),
         "cities": _format_cities_summary(freeciv_state, player_id),
-        "legal_actions_count": len(freeciv_state.get_legal_actions(player_id))
+        "legal_actions_count": len(freeciv_state.get_legal_actions(player_id)),
     }
 
     return json.dumps(formatted_state, indent=2)
