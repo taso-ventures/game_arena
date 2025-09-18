@@ -179,24 +179,24 @@ _EXPECTED_CONVERTED_STATE_STR = """19 . . . W . . . . . . W . . . W . . . .
 
 class GoTest(absltest.TestCase):
 
-  def test_basic(self):
-    game = pyspiel.load_game("go(board_size=9)")
-    state = game.new_initial_state()
-    state.apply_action(state.string_to_action("B a1"))
-    state.apply_action(state.string_to_action("W a9"))
-    state.apply_action(state.string_to_action("B j9"))
-    state.apply_action(state.string_to_action("W j1"))
-    state.apply_action(state.string_to_action("B d5"))
-    state_str = go_formatter.format_state(state)
-    state_dict = json.loads(state_str)
-    self.assertEqual(state_dict, _EXPECTED_STATE_DICT)
+    def test_basic(self):
+        game = pyspiel.load_game("go(board_size=9)")
+        state = game.new_initial_state()
+        state.apply_action(state.string_to_action("B a1"))
+        state.apply_action(state.string_to_action("W a9"))
+        state.apply_action(state.string_to_action("B j9"))
+        state.apply_action(state.string_to_action("W j1"))
+        state.apply_action(state.string_to_action("B d5"))
+        state_str = go_formatter.format_state(state)
+        state_dict = json.loads(state_str)
+        self.assertEqual(state_dict, _EXPECTED_STATE_DICT)
 
-  def test_convert_state(self):
-    converted_state_str = go_formatter.convert_state(
-        _STATE_STR, swap_probability=1.0
-    )
-    self.assertEqual(converted_state_str, _EXPECTED_CONVERTED_STATE_STR)
+    def test_convert_state(self):
+        converted_state_str = go_formatter.convert_state(
+            _STATE_STR, swap_probability=1.0
+        )
+        self.assertEqual(converted_state_str, _EXPECTED_CONVERTED_STATE_STR)
 
 
 if __name__ == "__main__":
-  absltest.main()
+    absltest.main()
