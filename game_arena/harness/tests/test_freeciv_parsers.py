@@ -34,7 +34,8 @@ class TestFreeCivRuleBasedParser(unittest.TestCase):
 
         # Test alternative JSON format
         json_text2 = (
-            '{"type": "city_production", "city": 301, "target": {"value": "warriors"}}'
+            '{"type": "city_production", "city": 301, "target": {"value":'
+            ' "warriors"}}'
         )
         parser_input2 = parsers.TextParserInput(text=json_text2)
 
@@ -46,7 +47,10 @@ class TestFreeCivRuleBasedParser(unittest.TestCase):
 
     def test_json_parsing_with_text_wrapper(self):
         """Test JSON parsing when JSON is embedded in text."""
-        wrapped_text = 'I will perform this action: {"action": "unit_attack", "unit": 102, "target": {"id": 203}} to complete the task.'
+        wrapped_text = (
+            'I will perform this action: {"action": "unit_attack", "unit": 102,'
+            ' "target": {"id": 203}} to complete the task.'
+        )
         parser_input = parsers.TextParserInput(text=wrapped_text)
 
         result = self.parser.parse(parser_input)
@@ -178,7 +182,10 @@ class TestFreeCivSoftParser(unittest.TestCase):
 
     def test_similarity_caching(self):
         """Test that similarity calculations are cached for performance."""
-        legal_moves = ["unit_move_settlers(101)_to(2,3)", "unit_fortify_warrior(102)"]
+        legal_moves = [
+            "unit_move_settlers(101)_to(2,3)",
+            "unit_fortify_warrior(102)",
+        ]
 
         parser_input = parsers.TextParserInput(
             text="move settlers", legal_moves=legal_moves
@@ -197,8 +204,12 @@ class TestFreeCivSoftParser(unittest.TestCase):
 
     def test_cache_size_limit(self):
         """Test that cache respects size limits."""
-        # Set a small cache size for testing
-        self.parser._max_cache_size = 3
+        # Create parser with small cache size for testing
+        from game_arena.harness.freeciv_parser_config import \
+            FreeCivParserConfig
+
+        config = FreeCivParserConfig(max_cache_size=3)
+        parser = FreeCivSoftParser(config)
 
         legal_moves = ["unit_move_settlers(101)_to(2,3)"]
 
@@ -207,12 +218,10 @@ class TestFreeCivSoftParser(unittest.TestCase):
             parser_input = parsers.TextParserInput(
                 text=f"test input {i}", legal_moves=legal_moves
             )
-            self.parser.parse(parser_input)
+            parser.parse(parser_input)
 
         # Cache should not exceed max size
-        self.assertLessEqual(
-            len(self.parser._similarity_cache), self.parser._max_cache_size
-        )
+        self.assertLessEqual(len(parser._similarity_cache), config.max_cache_size)
 
     def test_enhanced_similarity_algorithm(self):
         """Test the enhanced similarity calculation with multiple metrics."""
@@ -317,7 +326,9 @@ class TestPerformance(unittest.TestCase):
 
         avg_time_ms = ((end_time - start_time) / 100) * 1000
         self.assertLess(
-            avg_time_ms, 10, f"JSON parsing took {avg_time_ms:.2f}ms (should be <10ms)"
+            avg_time_ms,
+            10,
+            f"JSON parsing took {avg_time_ms:.2f}ms (should be <10ms)",
         )
 
     def test_fuzzy_matching_performance(self):
@@ -371,7 +382,9 @@ class TestPerformance(unittest.TestCase):
 
         avg_time_ms = ((end_time - start_time) / 100) * 1000
         self.assertLess(
-            avg_time_ms, 10, f"Parser chain took {avg_time_ms:.2f}ms (should be <10ms)"
+            avg_time_ms,
+            10,
+            f"Parser chain took {avg_time_ms:.2f}ms (should be <10ms)",
         )
 
 
@@ -566,8 +579,11 @@ class TestErrorHandling(unittest.TestCase):
 
     def test_cache_thrashing_scenarios(self):
         """Test cache behavior under thrashing conditions."""
-        parser = FreeCivSoftParser()
-        parser._max_cache_size = 5  # Small cache for testing
+        from game_arena.harness.freeciv_parser_config import \
+            FreeCivParserConfig
+
+        config = FreeCivParserConfig(max_cache_size=5)
+        parser = FreeCivSoftParser(config)
 
         legal_moves = ["unit_move_settlers(101)_to(2,3)"]
 
@@ -580,14 +596,17 @@ class TestErrorHandling(unittest.TestCase):
             # Should not crash or perform extremely poorly
 
         # Cache should respect size limit
-        self.assertLessEqual(len(parser._similarity_cache), parser._max_cache_size)
+        self.assertLessEqual(len(parser._similarity_cache), config.max_cache_size)
 
     def test_memory_usage_with_large_cache(self):
         """Test memory usage patterns with large cache sizes."""
         import sys
 
-        parser = FreeCivSoftParser()
-        parser._max_cache_size = 100
+        from game_arena.harness.freeciv_parser_config import \
+            FreeCivParserConfig
+
+        config = FreeCivParserConfig(max_cache_size=100)
+        parser = FreeCivSoftParser(config)
 
         legal_moves = ["unit_move_settlers(101)_to(2,3)"]
 
@@ -604,7 +623,7 @@ class TestErrorHandling(unittest.TestCase):
         # Cache should grow but respect limits
         final_cache_size = len(parser._similarity_cache)
         self.assertGreater(final_cache_size, initial_cache_size)
-        self.assertLessEqual(final_cache_size, parser._max_cache_size)
+        self.assertLessEqual(final_cache_size, config.max_cache_size)
 
     def test_input_validation_edge_cases(self):
         """Test input validation edge cases."""
@@ -705,12 +724,44 @@ class TestSecurityAndPerformance(unittest.TestCase):
         result = parser.parse(parser_input)
         # Result can be None (rejected) or parsed successfully
 
+    def test_line_length_validation(self):
+        """Test that excessively long lines are rejected."""
+        parser = FreeCivRuleBasedParser()
+
+        # Create input with one very long line
+        long_line = "a" * 15000  # Exceeds default max_line_length of 10KB
+        test_input = f"Some valid content\n{long_line}\nMore content"
+
+        parser_input = parsers.TextParserInput(text=test_input)
+        result = parser.parse(parser_input)
+
+        # Should be rejected due to line length
+        self.assertIsNone(result)
+
+    def test_line_length_validation_soft_parser(self):
+        """Test that soft parser also validates line lengths."""
+        parser = FreeCivSoftParser()
+        legal_moves = ["unit_move_settlers(101)_to(2,3)"]
+
+        # Create input with one very long line
+        long_line = "a" * 15000  # Exceeds default max_line_length of 10KB
+        test_input = f"Move unit\n{long_line}\nto position"
+
+        parser_input = parsers.TextParserInput(text=test_input, legal_moves=legal_moves)
+        result = parser.parse(parser_input)
+
+        # Should be rejected due to line length
+        self.assertIsNone(result)
+
     def test_similarity_calculation_performance_bounds(self):
         """Test that similarity calculations have reasonable performance bounds."""
         parser = FreeCivSoftParser()
 
         # Test with longer strings
-        long_text = "move settlers from position 101 to coordinate 25 30 using shortest path available"
+        long_text = (
+            "move settlers from position 101 to coordinate 25 30 using shortest"
+            " path available"
+        )
         long_move = (
             "unit_move_settlers(101)_to(25,30)_via_shortest_path_optimization_enabled"
         )
@@ -743,7 +794,7 @@ class TestSecurityAndPerformance(unittest.TestCase):
                 cache_size = len(parser._similarity_cache)
                 self.assertLessEqual(
                     cache_size,
-                    parser._max_cache_size,
+                    parser._config.max_cache_size,
                     f"Cache size {cache_size} exceeds limit at iteration {i}",
                 )
 

@@ -15,6 +15,32 @@ try:  # pragma: no cover - optional dependency
 except ImportError:  # pragma: no cover - fallback for tests without OpenSpiel
     pyspiel = None  # type: ignore
 
+# Security: Maximum JSON nesting depth to prevent DoS attacks
+MAX_JSON_DEPTH = 10
+
+
+def _validate_json_depth(data: Any, current_depth: int = 0) -> None:
+    """Validate JSON depth to prevent DoS attacks from deeply nested structures.
+
+    Args:
+        data: JSON data to validate (dict, list, or primitive)
+        current_depth: Current nesting depth
+
+    Raises:
+        ValueError: If depth exceeds MAX_JSON_DEPTH
+    """
+    if current_depth > MAX_JSON_DEPTH:
+        raise ValueError(
+            f"JSON nesting depth {current_depth} exceeds maximum {MAX_JSON_DEPTH}"
+        )
+
+    if isinstance(data, dict):
+        for value in data.values():
+            _validate_json_depth(value, current_depth + 1)
+    elif isinstance(data, list):
+        for item in data:
+            _validate_json_depth(item, current_depth + 1)
+
 
 class _FallbackGameState:
     """Minimal fallback for pyspiel.State when OpenSpiel is unavailable.
@@ -164,7 +190,8 @@ def _validate_state_size(raw_state: Mapping[str, Any]) -> None:
     state_size = _calculate_deep_size(raw_state)
     if state_size > MAX_STATE_SIZE_BYTES:
         raise ValueError(
-            f"State data exceeds maximum allowed size: {state_size} > {MAX_STATE_SIZE_BYTES}"
+            f"State data exceeds maximum allowed size: {state_size} >"
+            f" {MAX_STATE_SIZE_BYTES}"
         )
 
 
@@ -349,13 +376,15 @@ class FreeCivAction(BaseModel):
     parse_method: str = Field(
         default="direct",
         max_length=20,
-        description="Parsing method used: 'json', 'natural_language', 'regex', 'fuzzy'",
+        description=(
+            "Parsing method used: 'json', 'natural_language', 'regex', 'fuzzy'"
+        ),
     )
     strategic_score: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Strategic importance score for action prioritization (0.0-1.0)",
+        description=("Strategic importance score for action prioritization (0.0-1.0)"),
     )
 
     # Packet ID mappings following FreeCiv protocol
@@ -527,6 +556,12 @@ class FreeCivAction(BaseModel):
                 raise ValueError(f"Invalid JSON format: {e}") from e
         else:
             data = json_data
+
+        # Security: Validate JSON depth to prevent DoS attacks
+        try:
+            _validate_json_depth(data)
+        except ValueError as e:
+            raise ValueError(f"JSON security validation failed: {e}") from e
 
         # Map common JSON field variations to our schema
         action_type = (
@@ -813,9 +848,11 @@ class FreeCivAction(BaseModel):
                     "x": self.target.get("x", "?"),
                     "y": self.target.get("y", "?"),
                     "target_id": self.target.get("id", "?"),
-                    "target": self.target.get("value")
-                    or self.target.get("name")
-                    or self.target.get("id", "?"),
+                    "target": (
+                        self.target.get("value")
+                        or self.target.get("name")
+                        or self.target.get("id", "?")
+                    ),
                 }
             )
 
@@ -920,7 +957,8 @@ class FreeCivPlayer(BaseModel):
         luxury = self.luxuries_rate
         if tax + science + luxury != 100:
             raise ValueError(
-                f"Tax, science, and luxury rates must sum to 100, got {tax + science + luxury}"
+                "Tax, science, and luxury rates must sum to 100, got"
+                f" {tax + science + luxury}"
             )
         return self
 
@@ -1224,7 +1262,9 @@ class FreeCivState(_GameStateBase):
                     f"luxuries_rate for player {pid}",
                 ),
                 science_rate=_safe_int_conversion(
-                    pdata.get("science_rate", 50), 100, f"science_rate for player {pid}"
+                    pdata.get("science_rate", 50),
+                    100,
+                    f"science_rate for player {pid}",
                 ),
                 tax_rate=_safe_int_conversion(
                     pdata.get("tax_rate", 50), 100, f"tax_rate for player {pid}"
@@ -1500,7 +1540,10 @@ class FreeCivState(_GameStateBase):
         return ordered_scores
 
     def __str__(self) -> str:
-        return f"FreeCivState(turn={self.turn}, phase={self.phase}, current_player={self._current_player_id})"
+        return (
+            f"FreeCivState(turn={self.turn}, phase={self.phase},"
+            f" current_player={self._current_player_id})"
+        )
 
     # ------------------------------------------------------------------
     # Adapter functionality
@@ -1874,8 +1917,8 @@ class FreeCivState(_GameStateBase):
         if unit is None:
             available_units = list(self.units.keys())[:10]  # Show up to 10 for context
             raise ValueError(
-                f"Unit {action.actor_id} not found for action '{action.action_type}'. "
-                f"Available units: {available_units}"
+                f"Unit {action.actor_id} not found for action '{action.action_type}'."
+                f" Available units: {available_units}"
             )
 
         if action.action_type == "unit_move" and action.target:
@@ -1966,8 +2009,8 @@ class FreeCivState(_GameStateBase):
                 :10
             ]  # Show up to 10 for context
             raise ValueError(
-                f"City {action.actor_id} not found for action '{action.action_type}'. "
-                f"Available cities: {available_cities}"
+                f"City {action.actor_id} not found for action '{action.action_type}'."
+                f" Available cities: {available_cities}"
             )
 
         if action.action_type in {"city_production", "city_switch_production"}:
@@ -2036,7 +2079,11 @@ class FreeCivState(_GameStateBase):
         units = self._get_visible_units(player_id)
         cities = self._get_visible_cities(player_id)
         observation = {
-            "game": {"turn": self.turn, "phase": self.phase, "player_id": player_id},
+            "game": {
+                "turn": self.turn,
+                "phase": self.phase,
+                "player_id": player_id,
+            },
             "map": {
                 "visible_tiles": visible_tiles,
                 "width": self.map.width,
@@ -2351,7 +2398,9 @@ class FreeCivState(_GameStateBase):
         return False
 
     def _get_priority_units(
-        self, friendly_units: List[Dict[str, Any]], enemy_units: List[Dict[str, Any]]
+        self,
+        friendly_units: List[Dict[str, Any]],
+        enemy_units: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """Get priority units based on strategic importance."""
         priority_units = []
