@@ -14,29 +14,118 @@
 
 import json
 
-from game_arena.harness.formatters import go as go_formatter
-
-from absl.testing import absltest
 import pyspiel
+from absl.testing import absltest
 
+from game_arena.harness.formatters import go as go_formatter
 
 # pylint: disable=line-too-long
 _EXPECTED_STATE_DICT = {
-    'board_size': 9,
-    'komi': 7.5,
-    'current_player_to_move': 'W',
-    'move_number': 6,
-    'previous_move_a1': 'B d5',
-    'board_grid': [
-        [{'A9': 'W'}, {'B9': '.'}, {'C9': '.'}, {'D9': '.'}, {'E9': '.'}, {'F9': '.'}, {'G9': '.'}, {'H9': '.'}, {'J9': 'B'}],
-        [{'A8': '.'}, {'B8': '.'}, {'C8': '.'}, {'D8': '.'}, {'E8': '.'}, {'F8': '.'}, {'G8': '.'}, {'H8': '.'}, {'J8': '.'}],
-        [{'A7': '.'}, {'B7': '.'}, {'C7': '.'}, {'D7': '.'}, {'E7': '.'}, {'F7': '.'}, {'G7': '.'}, {'H7': '.'}, {'J7': '.'}],
-        [{'A6': '.'}, {'B6': '.'}, {'C6': '.'}, {'D6': '.'}, {'E6': '.'}, {'F6': '.'}, {'G6': '.'}, {'H6': '.'}, {'J6': '.'}],
-        [{'A5': '.'}, {'B5': '.'}, {'C5': '.'}, {'D5': 'B'}, {'E5': '.'}, {'F5': '.'}, {'G5': '.'}, {'H5': '.'}, {'J5': '.'}],
-        [{'A4': '.'}, {'B4': '.'}, {'C4': '.'}, {'D4': '.'}, {'E4': '.'}, {'F4': '.'}, {'G4': '.'}, {'H4': '.'}, {'J4': '.'}],
-        [{'A3': '.'}, {'B3': '.'}, {'C3': '.'}, {'D3': '.'}, {'E3': '.'}, {'F3': '.'}, {'G3': '.'}, {'H3': '.'}, {'J3': '.'}],
-        [{'A2': '.'}, {'B2': '.'}, {'C2': '.'}, {'D2': '.'}, {'E2': '.'}, {'F2': '.'}, {'G2': '.'}, {'H2': '.'}, {'J2': '.'}],
-        [{'A1': 'B'}, {'B1': '.'}, {'C1': '.'}, {'D1': '.'}, {'E1': '.'}, {'F1': '.'}, {'G1': '.'}, {'H1': '.'}, {'J1': 'W'}],
+    "board_size": 9,
+    "komi": 7.5,
+    "current_player_to_move": "W",
+    "move_number": 6,
+    "previous_move_a1": "B d5",
+    "board_grid": [
+        [
+            {"A9": "W"},
+            {"B9": "."},
+            {"C9": "."},
+            {"D9": "."},
+            {"E9": "."},
+            {"F9": "."},
+            {"G9": "."},
+            {"H9": "."},
+            {"J9": "B"},
+        ],
+        [
+            {"A8": "."},
+            {"B8": "."},
+            {"C8": "."},
+            {"D8": "."},
+            {"E8": "."},
+            {"F8": "."},
+            {"G8": "."},
+            {"H8": "."},
+            {"J8": "."},
+        ],
+        [
+            {"A7": "."},
+            {"B7": "."},
+            {"C7": "."},
+            {"D7": "."},
+            {"E7": "."},
+            {"F7": "."},
+            {"G7": "."},
+            {"H7": "."},
+            {"J7": "."},
+        ],
+        [
+            {"A6": "."},
+            {"B6": "."},
+            {"C6": "."},
+            {"D6": "."},
+            {"E6": "."},
+            {"F6": "."},
+            {"G6": "."},
+            {"H6": "."},
+            {"J6": "."},
+        ],
+        [
+            {"A5": "."},
+            {"B5": "."},
+            {"C5": "."},
+            {"D5": "B"},
+            {"E5": "."},
+            {"F5": "."},
+            {"G5": "."},
+            {"H5": "."},
+            {"J5": "."},
+        ],
+        [
+            {"A4": "."},
+            {"B4": "."},
+            {"C4": "."},
+            {"D4": "."},
+            {"E4": "."},
+            {"F4": "."},
+            {"G4": "."},
+            {"H4": "."},
+            {"J4": "."},
+        ],
+        [
+            {"A3": "."},
+            {"B3": "."},
+            {"C3": "."},
+            {"D3": "."},
+            {"E3": "."},
+            {"F3": "."},
+            {"G3": "."},
+            {"H3": "."},
+            {"J3": "."},
+        ],
+        [
+            {"A2": "."},
+            {"B2": "."},
+            {"C2": "."},
+            {"D2": "."},
+            {"E2": "."},
+            {"F2": "."},
+            {"G2": "."},
+            {"H2": "."},
+            {"J2": "."},
+        ],
+        [
+            {"A1": "B"},
+            {"B1": "."},
+            {"C1": "."},
+            {"D1": "."},
+            {"E1": "."},
+            {"F1": "."},
+            {"G1": "."},
+            {"H1": "."},
+            {"J1": "W"},
+        ],
     ],
 }
 # pylint: enable=line-too-long
@@ -90,24 +179,24 @@ _EXPECTED_CONVERTED_STATE_STR = """19 . . . W . . . . . . W . . . W . . . .
 
 class GoTest(absltest.TestCase):
 
-  def test_basic(self):
-    game = pyspiel.load_game('go(board_size=9)')
-    state = game.new_initial_state()
-    state.apply_action(state.string_to_action('B a1'))
-    state.apply_action(state.string_to_action('W a9'))
-    state.apply_action(state.string_to_action('B j9'))
-    state.apply_action(state.string_to_action('W j1'))
-    state.apply_action(state.string_to_action('B d5'))
-    state_str = go_formatter.format_state(state)
-    state_dict = json.loads(state_str)
-    self.assertEqual(state_dict, _EXPECTED_STATE_DICT)
+    def test_basic(self):
+        game = pyspiel.load_game("go(board_size=9)")
+        state = game.new_initial_state()
+        state.apply_action(state.string_to_action("B a1"))
+        state.apply_action(state.string_to_action("W a9"))
+        state.apply_action(state.string_to_action("B j9"))
+        state.apply_action(state.string_to_action("W j1"))
+        state.apply_action(state.string_to_action("B d5"))
+        state_str = go_formatter.format_state(state)
+        state_dict = json.loads(state_str)
+        self.assertEqual(state_dict, _EXPECTED_STATE_DICT)
 
-  def test_convert_state(self):
-    converted_state_str = go_formatter.convert_state(
-        _STATE_STR, swap_probability=1.0
-    )
-    self.assertEqual(converted_state_str, _EXPECTED_CONVERTED_STATE_STR)
+    def test_convert_state(self):
+        converted_state_str = go_formatter.convert_state(
+            _STATE_STR, swap_probability=1.0
+        )
+        self.assertEqual(converted_state_str, _EXPECTED_CONVERTED_STATE_STR)
 
 
-if __name__ == '__main__':
-  absltest.main()
+if __name__ == "__main__":
+    absltest.main()
