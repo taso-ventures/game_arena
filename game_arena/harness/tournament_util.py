@@ -146,6 +146,9 @@ def convert_to_readable_state(
         )
     elif game_short_name.startswith("go"):
         return go_formatter.convert_state(state_str)
+    elif game_short_name.startswith("freeciv"):
+        # FreeCiv state is already in JSON format, return as-is
+        return state_str
     else:
         return state_str
 

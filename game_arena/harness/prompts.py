@@ -35,6 +35,7 @@ class PromptTemplate(enum.Enum):
     )
     WITH_BOARD_IMAGE = "WITH_BOARD_IMAGE"
     WITH_SVG_RENDERED_IMAGE = "WITH_SVG_RENDERED_IMAGE"
+    FREECIV_ENHANCED = "FREECIV_ENHANCED"
 
     @classmethod
     def from_string(cls, value: str) -> "PromptTemplate":

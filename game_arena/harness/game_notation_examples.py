@@ -93,6 +93,43 @@ universal_poker_notation = (
 universal_poker_state_notation = "text"
 
 
+################################################################################
+##### FREECIV #####
+################################################################################
+freeciv_state = """{
+  "turn": 42,
+  "players": {
+    "1": {
+      "name": "Romans",
+      "gold": 245,
+      "science": 120,
+      "score": 340,
+      "government": "Republic",
+      "cities": [{"id": 1, "name": "Rome", "x": 10, "y": 15, "pop": 8}]
+    }
+  },
+  "units": [
+    {"id": 1, "type": "Warrior", "x": 10, "y": 14, "hp": 100, "owner": 1},
+    {"id": 2, "type": "Settler", "x": 12, "y": 16, "hp": 100, "owner": 1}
+  ],
+  "map": {
+    "width": 80,
+    "height": 50,
+    "tiles": [
+      {"x": 10, "y": 15, "terrain": "grassland", "city": 1, "owner": 1}
+    ]
+  }
+}"""
+freeciv_action = (
+    "unit_move unit_id=1 target_x=11 target_y=14; "
+    "city_production city_id=1 item=Archer; "
+    "unit_attack unit_id=1 target_unit_id=5"
+)
+freeciv_player_map = {1: "Romans", 2: "Greeks", 3: "Egyptians", 4: "Chinese"}
+freeciv_notation = "FreeCiv action format with type, actor, and target parameters"
+freeciv_state_notation = "JSON representation of game state"
+
+
 GAME_SPECIFIC_NOTATIONS = {
     "chess": {
         "state": chess_state,
@@ -128,5 +165,12 @@ GAME_SPECIFIC_NOTATIONS = {
         "player_map": universal_poker_player_map,
         "move_notation": universal_poker_notation,
         "state_notation": universal_poker_state_notation,
+    },
+    "freeciv": {
+        "state": freeciv_state,
+        "action": freeciv_action,
+        "player_map": freeciv_player_map,
+        "move_notation": freeciv_notation,
+        "state_notation": freeciv_state_notation,
     },
 }
