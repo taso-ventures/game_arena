@@ -28,6 +28,7 @@ dependencies = [
   "pydantic",
   "requests",
   "tenacity",
+  "websockets",
   # keep-sorted end
 ]
 
