@@ -1,0 +1,76 @@
+# Model-specific configurations for prompt generation
+# Each model has distinct token limits, output styles, and reasoning approaches
+# that influence how game prompts are formatted and structured.
+
+models:
+  gpt-5:
+    max_tokens: 4000
+    style: "structured"
+    reasoning: "chain_of_thought"
+    format: "json_with_explanation"
+    description: "OpenAI's GPT-5 with structured output and detailed reasoning"
+
+  claude:
+    max_tokens: 3500
+    style: "conversational"
+    reasoning: "step_by_step"
+    format: "natural_with_tags"
+    description: "Anthropic's Claude with natural conversation flow"
+
+  deepseek:
+    max_tokens: 3000
+    style: "concise"
+    reasoning: "direct"
+    format: "structured_json"
+    description: "DeepSeek with concise, direct reasoning approach"
+
+# Style definitions for prompt formatting
+styles:
+  structured:
+    use_headers: true
+    bullet_points: true
+    numbered_lists: true
+    emphasis_markers: true
+
+  conversational:
+    use_headers: false
+    bullet_points: false
+    numbered_lists: false
+    emphasis_markers: false
+
+  concise:
+    use_headers: true
+    bullet_points: true
+    numbered_lists: false
+    emphasis_markers: false
+
+# Reasoning approach definitions
+reasoning_approaches:
+  chain_of_thought:
+    step_by_step: true
+    show_reasoning: true
+    explicit_conclusions: true
+
+  step_by_step:
+    step_by_step: true
+    show_reasoning: true
+    explicit_conclusions: false
+
+  direct:
+    step_by_step: false
+    show_reasoning: false
+    explicit_conclusions: true
+
+# Output format specifications
+output_formats:
+  json_with_explanation:
+    use_json: true
+    include_explanation: true
+
+  natural_with_tags:
+    use_json: false
+    include_tags: true
+
+  structured_json:
+    use_json: true
+    strict_structure: true
