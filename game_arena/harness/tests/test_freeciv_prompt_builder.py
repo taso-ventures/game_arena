@@ -80,13 +80,19 @@ class TestFreeCivPromptBuilder(unittest.TestCase):
                 self.assertIsInstance(prompt, str)
                 self.assertGreater(len(prompt), 100)
 
-                # Check model-specific formatting
+                # Check unified template elements (same for all models now)
+                self.assertIn("GAME ANALYSIS & STRATEGY", prompt)
+                self.assertIn("VICTORY OBJECTIVE", prompt)
+                self.assertIn("MEMORY CONTEXT", prompt)
+                self.assertIn("LONG-TERM STRATEGY", prompt)
+                self.assertIn("ENTERTAINMENT DIRECTIVE", prompt)
+                self.assertIn("REASONING FRAMEWORK", prompt)
+
+                # Check model-specific response formatting
                 if model_name == "gpt-5":
-                    self.assertIn("STRATEGIC ANALYSIS", prompt)
-                    self.assertIn("json", prompt.lower())
+                    self.assertIn("FINAL DECISION:", prompt)
                 elif model_name == "claude":
-                    self.assertIn("<priorities>", prompt)
-                    self.assertIn("<actions>", prompt)
+                    self.assertIn("natural, engaging way", prompt)
                 elif model_name == "deepseek":
                     self.assertIn("Turn", prompt)
 
@@ -121,25 +127,36 @@ class TestFreeCivPromptBuilder(unittest.TestCase):
 
         for phase in phases:
             with self.subTest(phase=phase):
-                # Mock different turn numbers for different phases
+                # Create observation with different turn numbers for different phases
                 if phase == "early_game":
-                    self.mock_state.turn = 5
+                    turn = 5
                 elif phase == "mid_game":
-                    self.mock_state.turn = 100
+                    turn = 100
                 else:  # late_game
-                    self.mock_state.turn = 180
+                    turn = 180
+
+                # Use dict observation format that new builder expects
+                observation = {
+                    "turn": turn,
+                    "players": {1: {"score": 340, "name": "Romans"}},
+                    "units": [],
+                    "cities": []
+                }
 
                 prompt = self.prompt_builder.build_enhanced_prompt(
-                    observation={"state": self.mock_state},
+                    observation=observation,
                     legal_actions=self.legal_actions,
                     model_name="gpt-5",
                 )
 
                 if phase == "early_game":
+                    self.assertIn("early game priorities", prompt.lower())
                     self.assertIn("explore", prompt.lower())
                 elif phase == "mid_game":
-                    self.assertIn("expand", prompt.lower())
+                    self.assertIn("mid game expansion", prompt.lower())
+                    self.assertIn("expansion", prompt.lower())
                 else:  # late_game
+                    self.assertIn("late game dominance", prompt.lower())
                     self.assertIn("victory", prompt.lower())
 
     def test_action_prioritization(self):
@@ -553,6 +570,272 @@ class TestEdgeCases(unittest.TestCase):
             line for line in result.split("\n") if line.strip() and line[0].isdigit()
         ]
         self.assertLessEqual(len(action_lines), 10)
+
+
+class TestErrorHandlingAndValidation(unittest.TestCase):
+    """Test error handling and input validation."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.prompt_builder = FreeCivPromptBuilder()
+
+    def test_invalid_model_name_validation(self):
+        """Test model name validation with various invalid inputs."""
+        obs = {"turn": 1, "players": {1: {"name": "Romans"}}}
+        actions = []
+
+        # Test empty model name
+        with self.assertRaises(ValueError):
+            self.prompt_builder.build_enhanced_prompt(obs, actions, "")
+
+        # Test None model name
+        with self.assertRaises(ValueError):
+            self.prompt_builder.build_enhanced_prompt(obs, actions, None)
+
+        # Test invalid characters in model name
+        with self.assertRaises(ValueError):
+            self.prompt_builder.build_enhanced_prompt(obs, actions, "model@123")
+
+        # Test SQL injection attempt
+        with self.assertRaises(ValueError):
+            self.prompt_builder.build_enhanced_prompt(
+                obs, actions, "'; DROP TABLE models; --"
+            )
+
+    def test_malformed_observation_handling(self):
+        """Test handling of malformed observation structures."""
+        actions = []
+
+        # Test with None observation
+        with self.assertRaises(TypeError):
+            self.prompt_builder.build_enhanced_prompt(None, actions, "gpt-5")
+
+        # Test with string instead of dict
+        with self.assertRaises(TypeError):
+            self.prompt_builder.build_enhanced_prompt("invalid", actions, "gpt-5")
+
+        # Test with list instead of dict
+        with self.assertRaises(TypeError):
+            self.prompt_builder.build_enhanced_prompt([], actions, "gpt-5")
+
+    def test_missing_required_observation_fields(self):
+        """Test handling of observations missing required fields."""
+        actions = []
+
+        # Test with completely empty observation
+        result = self.prompt_builder.build_enhanced_prompt({}, actions, "gpt-5")
+        self.assertIsInstance(result, str)
+        self.assertGreater(len(result), 0)
+
+        # Test with observation missing players
+        obs_no_players = {"turn": 5, "units": [], "cities": []}
+        result = self.prompt_builder.build_enhanced_prompt(
+            obs_no_players, actions, "gpt-5"
+        )
+        self.assertIsInstance(result, str)
+
+    def test_compress_observation_edge_cases(self):
+        """Test ContextManager.compress_observation with edge cases."""
+        context_manager = ContextManager()
+
+        # Test with None input
+        result = context_manager.compress_observation(None, 1000)
+        self.assertEqual(result, {})
+
+        # Test with deeply nested structures
+        deep_obs = {"level1": {"level2": {"level3": {"level4": "value"}}}}
+        result = context_manager.compress_observation(deep_obs, 1000)
+        self.assertIsInstance(result, dict)
+
+        # Test with circular references (should not cause infinite recursion)
+        circular_obs = {"key": "value"}
+        circular_obs["self"] = circular_obs
+        result = context_manager.compress_observation(circular_obs, 1000)
+        self.assertIsInstance(result, dict)
+
+    def test_threat_detection_with_empty_data(self):
+        """Test threat detection with empty or invalid unit data."""
+        obs_builder = ObservationBuilder()
+
+        # Test with empty observation
+        result = obs_builder._assess_threats({}, 1)
+        self.assertIn("No immediate threats", result)
+
+        # Test with malformed unit data
+        obs_with_bad_units = {
+            "units": ["invalid_unit", {"invalid": "data"}, None],
+            "cities": [],
+        }
+        result = obs_builder._assess_threats(obs_with_bad_units, 1)
+        self.assertIsInstance(result, str)
+
+    def test_victory_condition_detection_edge_cases(self):
+        """Test victory condition detection with edge case data."""
+        prompt_builder = FreeCivPromptBuilder()
+
+        # Test with no units or cities
+        obs = {"turn": 100, "units": [], "cities": []}
+        result = prompt_builder._detect_victory_type(obs, 1)
+        self.assertIsInstance(result, str)
+
+        # Test with invalid unit data
+        obs_bad_units = {
+            "turn": 50,
+            "units": [{"type": None}, {"owner": "invalid"}],
+            "cities": [],
+        }
+        result = prompt_builder._detect_victory_type(obs_bad_units, 1)
+        self.assertIsInstance(result, str)
+
+    def test_concurrent_prompt_generation(self):
+        """Test thread safety of prompt builder."""
+        import concurrent.futures
+        import threading
+
+        prompt_builder = FreeCivPromptBuilder()
+        obs = {"turn": 1, "players": {1: {"name": "Romans"}}}
+        actions = []
+
+        def build_prompt():
+            return prompt_builder.build_enhanced_prompt(obs, actions, "gpt-5")
+
+        # Test concurrent access
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(build_prompt) for _ in range(20)]
+            results = [f.result() for f in futures]
+
+        # All results should be strings and non-empty
+        for result in results:
+            self.assertIsInstance(result, str)
+            self.assertGreater(len(result), 0)
+
+    def test_spatial_indexing_performance(self):
+        """Test spatial indexing with large numbers of units."""
+        obs_builder = ObservationBuilder()
+
+        # Create observation with many enemy units
+        large_enemy_units = []
+        for i in range(1000):
+            large_enemy_units.append(
+                {
+                    "id": i,
+                    "type": "Warrior",
+                    "x": i % 100,
+                    "y": i // 100,
+                    "owner": 2,  # Enemy player
+                }
+            )
+
+        obs = {
+            "units": large_enemy_units,
+            "cities": [{"name": "TestCity", "x": 50, "y": 50}],
+        }
+
+        # Should complete quickly even with many units
+        import time
+
+        start_time = time.time()
+        result = obs_builder._assess_threats(obs, 1)
+        end_time = time.time()
+
+        # Should complete in reasonable time (less than 100ms)
+        self.assertLess(end_time - start_time, 0.1)
+        self.assertIsInstance(result, str)
+
+    def test_model_configuration_fallback(self):
+        """Test fallback behavior for unknown models."""
+        prompt_builder = FreeCivPromptBuilder()
+        obs = {"turn": 1, "players": {1: {"name": "Romans"}}}
+        actions = []
+
+        # Test with unknown model - should use default without crashing
+        result = prompt_builder.build_enhanced_prompt(obs, actions, "unknown-model")
+        self.assertIsInstance(result, str)
+        self.assertGreater(len(result), 0)
+
+    def test_memory_usage_with_large_observations(self):
+        """Test memory efficiency with very large observations."""
+        prompt_builder = FreeCivPromptBuilder()
+
+        # Create large observation
+        large_obs = {
+            "turn": 100,
+            "players": {
+                i: {"name": f"Player{i}", "score": i * 100} for i in range(1, 21)
+            },
+            "units": [
+                {"id": i, "type": "Warrior", "x": i, "y": i} for i in range(5000)
+            ],
+            "cities": [{"id": i, "name": f"City{i}", "pop": i} for i in range(500)],
+        }
+        actions = []
+
+        # Should handle large data without memory issues
+        result = prompt_builder.build_enhanced_prompt(large_obs, actions, "gpt-5")
+        self.assertIsInstance(result, str)
+
+        # Result should be compressed to reasonable size
+        self.assertLess(len(result), 50000)  # Should be compressed
+
+
+class TestThreatDetectionSpatialIndexing(unittest.TestCase):
+    """Test spatial indexing implementation for threat detection."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.obs_builder = ObservationBuilder()
+
+    def test_build_threat_index(self):
+        """Test spatial index building."""
+        enemy_units = [
+            {"id": 1, "x": 5, "y": 5, "type": "Warrior"},
+            {"id": 2, "x": 10, "y": 10, "type": "Archer"},
+            {"id": 3, "x": 15, "y": 15, "type": "Legion"},
+        ]
+
+        index = self.obs_builder._build_threat_index(enemy_units)
+        self.assertIsInstance(index, dict)
+        self.assertGreater(len(index), 0)
+
+    def test_get_nearby_threats(self):
+        """Test spatial threat detection."""
+        # Create threat map
+        enemy_units = [
+            {"id": 1, "x": 2, "y": 2, "type": "Warrior"},  # Close
+            {"id": 2, "x": 10, "y": 10, "type": "Archer"},  # Far
+        ]
+        threat_map = self.obs_builder._build_threat_index(enemy_units)
+
+        # Test threat detection at position (0, 0)
+        threats = self.obs_builder._get_nearby_threats((0, 0), threat_map)
+
+        # Should find the close warrior but not the distant archer
+        self.assertGreater(len(threats), 0)
+        threat_ids = [t["id"] for t in threats]
+        self.assertIn(1, threat_ids)  # Close warrior should be detected
+
+    def test_manhattan_distance(self):
+        """Test Manhattan distance calculation."""
+        distance = self.obs_builder._manhattan_distance((0, 0), (3, 4))
+        self.assertEqual(distance, 7)
+
+        distance = self.obs_builder._manhattan_distance((5, 5), (5, 5))
+        self.assertEqual(distance, 0)
+
+    def test_spatial_indexing_with_invalid_units(self):
+        """Test spatial indexing handles invalid unit data gracefully."""
+        # Mix of valid and invalid units
+        mixed_units = [
+            {"id": 1, "x": 5, "y": 5, "type": "Warrior"},  # Valid
+            {"invalid": "unit"},  # Missing coordinates
+            None,  # None entry
+            "string_unit",  # String instead of dict
+            {"x": "invalid", "y": 5},  # Invalid coordinate types
+        ]
+
+        # Should not crash and return valid index
+        index = self.obs_builder._build_threat_index(mixed_units)
+        self.assertIsInstance(index, dict)
 
 
 if __name__ == "__main__":

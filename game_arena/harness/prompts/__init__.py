@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Prompt builders for game-specific prompt generation."""
+"""FreeCiv prompt builder for enhanced prompt generation."""
 
 from game_arena.harness.prompts.freeciv_prompts import FreeCivPromptBuilder
 
