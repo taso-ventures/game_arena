@@ -48,6 +48,8 @@ from dataclasses import dataclass
 from typing import (Any, Dict, Final, List, Literal, Optional, Set, Tuple,
                     TypedDict, TypeVar)
 
+from game_arena.harness.prompts.base import BasePromptBuilder
+
 T = TypeVar("T")
 
 
@@ -126,7 +128,7 @@ class StrategicComponents(TypedDict):
 
 
 GamePhase = Literal["early_game", "mid_game", "late_game"]
-ModelName = Literal["gpt-5", "claude", "deepseek"]
+# ModelName now supports any string - validation done by base class
 
 from game_arena.harness.freeciv_state import FreeCivAction
 
@@ -209,172 +211,13 @@ class ActionPriority(enum.IntEnum):
     DEFAULT = 10  # unknown actions
 
 
-MODEL_CONFIGS = {
-    "gpt-5": {
-        "max_tokens": 4000,
-        "style": "structured",
-        "reasoning": "chain_of_thought",
-        "format": "json_with_explanation",
-    },
-    "claude": {
-        "max_tokens": 3500,
-        "style": "conversational",
-        "reasoning": "step_by_step",
-        "format": "natural_with_tags",
-    },
-    "deepseek": {
-        "max_tokens": 3000,
-        "style": "concise",
-        "reasoning": "direct",
-        "format": "structured_json",
-    },
-}
+# MODEL_CONFIGS moved to external configuration file:
+# config/prompts/model_configs.yaml
 
-PROMPT_TEMPLATES = {
-    "early_game": {
-        "gpt-5": """STRATEGIC ANALYSIS - Turn {turn}
-=============================
-Victory: {victory_progress}% progress toward {victory_type}
-Position: {position} (score: {score})
+# PROMPT_TEMPLATES moved to external configuration file:
+# config/prompts/game_templates.yaml
+# This provides unified templates across all models with entertainment focus
 
-EARLY GAME PRIORITIES:
-1. Explore and map the surrounding area
-2. Find optimal city sites with resources
-3. Establish basic infrastructure
-4. Defend against barbarians
-
-{strategic_summary}
-
-AVAILABLE ACTIONS (sorted by impact):
-{prioritized_actions}
-
-Respond with JSON: {{"action": "action_type", "reasoning": "step-by-step analysis", "confidence": 0.95}}""",
-        "claude": """You're playing FreeCiv as the {player_name}. It's the early game (Turn {turn}).
-
-<game_state>
-{strategic_summary}
-</game_state>
-
-<priorities>
-- Exploration: Scout the map for resources and good city sites
-- Settlement: Establish cities near food and strategic resources
-- Defense: Protect against barbarian threats
-- Infrastructure: Build basic improvements
-</priorities>
-
-<actions>
-{prioritized_actions}
-</actions>
-
-Choose your next action and explain your reasoning. Focus on long-term strategic positioning.""",
-        "deepseek": """Turn {turn} - Early Game
-
-Status: {position} (Score: {score})
-{strategic_summary}
-
-Key Actions:
-{prioritized_actions}
-
-Select action with brief reasoning.""",
-    },
-    "mid_game": {
-        "gpt-5": """STRATEGIC ANALYSIS - Turn {turn}
-=============================
-Victory: {victory_progress}% progress toward {victory_type}
-Position: {position} (score: {score})
-
-MID GAME PRIORITIES:
-1. Expand territory and establish new cities
-2. Advance technology tree strategically
-3. Build military for defense/conquest
-4. Develop trade and diplomacy
-
-{strategic_summary}
-
-AVAILABLE ACTIONS (sorted by impact):
-{prioritized_actions}
-
-Respond with JSON: {{"action": "action_type", "reasoning": "strategic analysis", "confidence": 0.90}}""",
-        "claude": """You're playing FreeCiv as the {player_name}. It's the mid game (Turn {turn}).
-
-<game_state>
-{strategic_summary}
-</game_state>
-
-<priorities>
-- Expansion: Claim territory before rivals
-- Technology: Research key advances for military/economy
-- Military: Build forces for defense or opportunity
-- Diplomacy: Manage relationships with other civilizations
-</priorities>
-
-<actions>
-{prioritized_actions}
-</actions>
-
-Choose your action focusing on competitive advantage and strategic positioning.""",
-        "deepseek": """Turn {turn} - Mid Game
-
-Status: {position} (Score: {score})
-{strategic_summary}
-
-Focus: Expansion, tech advancement, military buildup
-
-Actions:
-{prioritized_actions}
-
-Select optimal action.""",
-    },
-    "late_game": {
-        "gpt-5": """STRATEGIC ANALYSIS - Turn {turn}
-=============================
-Victory: {victory_progress}% progress toward {victory_type}
-Position: {position} (score: {score})
-
-LATE GAME PRIORITIES:
-1. Push for victory condition completion
-2. Defend against rival victory attempts
-3. Optimize production for endgame
-4. Execute military campaigns if needed
-
-{strategic_summary}
-
-AVAILABLE ACTIONS (sorted by impact):
-{prioritized_actions}
-
-Respond with JSON: {{"action": "action_type", "reasoning": "victory-focused strategy", "confidence": 0.85}}""",
-        "claude": """You're playing FreeCiv as the {player_name}. It's the late game (Turn {turn}).
-
-<game_state>
-{strategic_summary}
-</game_state>
-
-<priorities>
-- Victory: Focus on completing your victory condition
-- Defense: Block rivals from achieving victory
-- Optimization: Maximize production efficiency
-- Timing: Execute decisive moves at the right moment
-</priorities>
-
-<actions>
-{prioritized_actions}
-</actions>
-
-Make your move with victory in mind. Time is running out.""",
-        "deepseek": """Turn {turn} - Late Game
-
-Status: {position} (Score: {score})
-{strategic_summary}
-
-Victory Focus: {victory_type}
-Progress: {victory_progress}%
-
-Critical Actions:
-{prioritized_actions}
-
-Choose winning move.""",
-    },
-}
 
 
 class ContextManager:
@@ -953,35 +796,33 @@ class ObservationBuilder:
         return "Variable impact: Situation dependent"
 
 
-class FreeCivPromptBuilder:
-    """Main prompt builder for FreeCiv LLM agents.
+class FreeCivPromptBuilder(BasePromptBuilder):
+    """FreeCiv-specific prompt builder for LLM agents.
 
-    This class orchestrates the generation of model-specific prompts optimized
-    for different LLM architectures playing FreeCiv. It handles game phase
-    detection, strategic analysis, context compression, and model-specific
-    formatting.
+    This class specializes the base prompt builder for FreeCiv gameplay,
+    providing strategic analysis, threat assessment, and context-aware
+    prompts optimized for entertaining and effective gameplay.
 
     Key features:
-    - Model-specific optimization (GPT-5, Claude, DeepSeek)
-    - Game phase awareness (early/mid/late game strategies)
+    - Inherits unified templates and model configurations from base class
+    - FreeCiv-specific strategic analysis and threat detection
+    - Game phase awareness with specialized strategies per phase
+    - Entertainment-focused prompt generation with dramatic flair
     - Context window management with intelligent compression
-    - Strategic threat and opportunity analysis
-    - Action prioritization based on strategic importance
-    - Performance optimized to <50ms generation time
+    - Memory integration for long-term strategic reasoning
 
     Example:
         >>> builder = FreeCivPromptBuilder()
         >>> obs = {"turn": 42, "players": {1: {"name": "Romans"}}}
         >>> actions = [FreeCivAction("unit_move", 1, {"x": 10, "y": 10}, {}, "unit")]
         >>> prompt = builder.build_enhanced_prompt(obs, actions, "gpt-5")
-        >>> len(prompt) < 16000  # Within GPT-5 token limits
+        >>> len(prompt) < 16000  # Within token limits
         True
     """
 
     def __init__(self):
-        """Initialize the prompt builder with templates and configurations."""
-        self.templates = PROMPT_TEMPLATES
-        self.model_configs = MODEL_CONFIGS
+        """Initialize the FreeCiv prompt builder."""
+        super().__init__("freeciv")
         self.observation_builder = ObservationBuilder()
         self.context_manager = ContextManager()
 
@@ -989,79 +830,262 @@ class FreeCivPromptBuilder:
         self,
         observation: ObservationData,
         legal_actions: List[FreeCivAction],
-        model_name: ModelName,
+        model_name: str,
+        **kwargs
     ) -> str:
-        """Generate model-specific prompt with context optimization.
+        """Generate enhanced FreeCiv prompt with entertainment focus.
 
-        This is the main entry point for prompt generation. It performs a 5-step
-        process to create optimized prompts: input validation, context analysis,
-        observation compression, strategic component building, and final
-        template-based prompt generation.
+        Creates entertaining, strategically sound prompts using the unified
+        template system with memory context and long-term reasoning.
 
         Args:
-            observation: Game state observation containing turn, players, units,
-                cities, and map data. Can be a FreeCivState object or dictionary.
-            legal_actions: List of valid FreeCiv actions available in current
-                state, used for action prioritization and strategic analysis.
-            model_name: Target model identifier. Supported values:
-                - 'gpt-5': Structured JSON format with chain-of-thought reasoning
-                - 'claude': Conversational style with XML-like tags
-                - 'deepseek': Concise format optimized for efficiency
+            observation: FreeCiv game state observation
+            legal_actions: List of available FreeCiv actions
+            model_name: Target model name for formatting
+            **kwargs: Additional parameters (player_id, etc.)
 
         Returns:
-            Formatted prompt string optimized for the specified model, including:
-            - Game phase-appropriate strategic guidance
-            - Compressed observation within token limits
-            - Prioritized action recommendations
-            - Victory condition analysis and progress tracking
-            - Threat assessment and opportunity identification
+            Formatted prompt string optimized for entertainment and strategy
 
         Raises:
-            ValueError: If model_name is invalid or contains unsafe characters.
-            TypeError: If observation is not a valid dictionary structure.
-
-        Performance:
-            Optimized to complete in <50ms for typical game states.
-            Handles large observations (1000+ units) through intelligent compression.
-
-        Example:
-            >>> builder = FreeCivPromptBuilder()
-            >>> obs = {
-            ...     "turn": 75,
-            ...     "players": {1: {"score": 450, "name": "Romans"}},
-            ...     "units": [{"type": "Warrior", "x": 10, "y": 10}],
-            ...     "cities": [{"name": "Rome", "pop": 5}]
-            ... }
-            >>> actions = [FreeCivAction("unit_move", 1, {"x": 11, "y": 10})]
-            >>> prompt = builder.build_enhanced_prompt(obs, actions, "claude")
-            >>> "<priorities>" in prompt  # Claude-specific formatting
-            True
+            ValueError: If model_name is invalid
+            KeyError: If required observation data is missing
         """
-        # Step 1: Prepare and validate inputs
-        validated_model_name = self._validate_model_name(model_name)
+        # Validate inputs using base class
+        self.validate_model_name(model_name)
+
+        # Prepare observation data
         obs_dict = self._prepare_observation(observation)
+        current_player_id = kwargs.get('player_id', self._get_current_player_id(obs_dict))
 
-        # Step 2: Determine context and configuration
-        phase = self._detect_game_phase(obs_dict)
-        model_config = self._get_model_config(validated_model_name)
+        # Determine game phase and strategy
+        phase = self.determine_game_phase(obs_dict)
 
-        # Step 3: Compress observation for context window
+        # Get model configuration from external config
+        model_config = self.get_model_config(model_name)
+
+        # Compress observation to fit model token limits
         compressed_obs = self._compress_for_model(obs_dict, model_config)
-        current_player_id = self._get_current_player_id(compressed_obs)
 
-        # Step 4: Build strategic components
-        strategic_components = self._build_strategic_components(
-            compressed_obs, legal_actions, current_player_id
+        # Build strategic analysis components
+        strategic_summary = self._build_strategic_summary(compressed_obs, current_player_id)
+        prioritized_actions = self._build_prioritized_actions(legal_actions)
+
+        # Get memory context and long-term strategy
+        memory_context = self.memory_context.get_context_summary()
+        long_term_strategy = self.get_long_term_strategy(compressed_obs)
+
+        # Extract game data for template
+        turn = compressed_obs.get('turn', 0)
+        players = compressed_obs.get('players', {})
+        current_player = players.get(current_player_id, {})
+        score = current_player.get('score', 0)
+        position = self._determine_position(score, players)
+        victory_type, victory_progress = self._analyze_victory_conditions(compressed_obs)
+
+        # Get phase-specific content from unified templates
+        game_content = self.game_templates['games']['freeciv'][phase].format(
+            strategic_summary=strategic_summary
         )
 
-        # Step 5: Generate final prompt
-        return self._generate_prompt(
-            validated_model_name,
-            phase,
-            compressed_obs,
-            current_player_id,
-            strategic_components,
+        # Get response format for the model
+        response_format = self.get_response_format_instruction(model_name)
+
+        # Build the final prompt using the base template
+        prompt = self.game_templates['base_template'].format(
+            turn=turn,
+            victory_type=victory_type,
+            victory_progress=victory_progress,
+            position=position,
+            score=score,
+            memory_context=memory_context,
+            long_term_strategy=long_term_strategy,
+            game_specific_content=game_content,
+            prioritized_actions=prioritized_actions,
+            response_format=response_format
         )
+
+        # Apply model-specific formatting
+        formatted_prompt = self.format_for_model(prompt, model_name)
+
+        # Update memory context for next turn
+        turn_data = {
+            'turn': turn,
+            'phase': phase,
+            'score': score,
+            'action_count': len(legal_actions)
+        }
+        self.update_memory_context(turn_data)
+
+        return formatted_prompt
+
+    def _prepare_observation(self, observation: ObservationData) -> Dict[str, Any]:
+        """Prepare observation data for processing.
+
+        Args:
+            observation: Raw observation data
+
+        Returns:
+            Prepared observation dictionary
+        """
+        if isinstance(observation, dict):
+            return observation.copy()
+        else:
+            # Handle other observation formats if needed
+            try:
+                return dict(observation)
+            except (TypeError, ValueError):
+                logging.warning(f"Could not convert observation of type {type(observation)}")
+                return {}
+
+    def _compress_for_model(self, obs: Dict[str, Any], model_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Compress observation to fit model token limits.
+
+        Args:
+            obs: Full observation dictionary
+            model_config: Model configuration with token limits
+
+        Returns:
+            Compressed observation dictionary
+        """
+        max_tokens = model_config.get('max_tokens', 3000)
+        return self.context_manager.compress_observation(obs, max_tokens)
+
+    def _determine_position(self, score: int, players: Dict[int, Any]) -> str:
+        """Determine player's relative position based on score.
+
+        Args:
+            score: Current player's score
+            players: Dictionary of all players
+
+        Returns:
+            Position description string
+        """
+        if not players:
+            return "Unknown position"
+
+        all_scores = [p.get('score', 0) for p in players.values()]
+        sorted_scores = sorted(all_scores, reverse=True)
+
+        if not sorted_scores or score >= sorted_scores[0]:
+            return "Leading"
+        elif score >= sorted_scores[len(sorted_scores)//2]:
+            return "Middle pack"
+        else:
+            return "Behind"
+
+    def _analyze_victory_conditions(self, obs: Dict[str, Any]) -> Tuple[str, int]:
+        """Analyze current victory condition progress.
+
+        Args:
+            obs: Game observation dictionary
+
+        Returns:
+            Tuple of (victory_type, progress_percentage)
+        """
+        cities = obs.get('cities', [])
+        units = obs.get('units', [])
+        turn = obs.get('turn', 0)
+
+        city_count = len(cities)
+        military_units = [u for u in units if u.get('type', '').lower() in CONFIG.MILITARY_UNIT_TYPES]
+
+        # Simple heuristics for victory type determination
+        if len(military_units) >= CONFIG.MIN_MILITARY_UNITS_FOR_DOMINATION:
+            victory_type = "Domination Victory"
+            progress = min(100, (len(military_units) * 100) // (CONFIG.MIN_MILITARY_UNITS_FOR_DOMINATION * 3))
+        elif city_count >= CONFIG.CITY_COUNT_FOR_VICTORY:
+            victory_type = "City-based Victory"
+            progress = min(100, (city_count * 100) // (CONFIG.CITY_COUNT_FOR_VICTORY * 2))
+        elif turn > CONFIG.ENDGAME_TURN_THRESHOLD:
+            victory_type = "Score Victory"
+            progress = min(100, (turn * 100) // 200)  # Assume 200 turn game
+        else:
+            victory_type = "Expansion Victory"
+            progress = min(100, (city_count * 50) + (len(units) * 10))
+
+        return victory_type, progress
+
+    def _build_strategic_summary(self, obs: Dict[str, Any], player_id: int) -> str:
+        """Build strategic summary of current situation.
+
+        Args:
+            obs: Game observation dictionary
+            player_id: Current player ID
+
+        Returns:
+            Strategic summary string
+        """
+        return self.observation_builder.build_strategic_summary(obs, player_id)
+
+    def _build_prioritized_actions(self, legal_actions: List[FreeCivAction]) -> str:
+        """Build prioritized list of available actions.
+
+        Args:
+            legal_actions: List of legal FreeCiv actions
+
+        Returns:
+            Formatted string of prioritized actions
+        """
+        if not legal_actions:
+            return "No actions currently available."
+
+        # Group actions by priority
+        action_groups = defaultdict(list)
+        for action in legal_actions:
+            priority = self._get_action_priority(action)
+            action_groups[priority].append(action)
+
+        # Format prioritized actions
+        formatted_actions = []
+        for priority in sorted(action_groups.keys()):
+            actions = action_groups[priority]
+            priority_name = ActionPriority(priority).name.title()
+            formatted_actions.append(f"\n{priority_name} Priority:")
+            for action in actions[:5]:  # Limit to 5 per priority
+                impact = self._assess_action_impact(action)
+                formatted_actions.append(f"• {action.action_type}: {impact}")
+
+        return "\n".join(formatted_actions)
+
+    def _get_action_priority(self, action: FreeCivAction) -> int:
+        """Get priority level for an action.
+
+        Args:
+            action: FreeCiv action to evaluate
+
+        Returns:
+            Priority level (lower number = higher priority)
+        """
+        action_type = action.action_type.lower()
+        if 'attack' in action_type:
+            return ActionPriority.HIGHEST
+        elif 'production' in action_type or 'build' in action_type:
+            return ActionPriority.HIGH
+        elif 'move' in action_type:
+            return ActionPriority.LOW
+        else:
+            return ActionPriority.DEFAULT
+
+    def _assess_action_impact(self, action: FreeCivAction) -> str:
+        """Assess the potential impact of an action.
+
+        Args:
+            action: FreeCiv action to assess
+
+        Returns:
+            Impact description string
+        """
+        # Simple impact assessment - can be enhanced with more sophisticated logic
+        action_type = action.action_type.lower()
+        if 'attack' in action_type:
+            return "High impact: Direct military engagement"
+        elif 'build' in action_type:
+            return "Medium impact: Infrastructure development"
+        elif 'move' in action_type:
+            return "Low-Medium impact: Positioning for future actions"
+        else:
+            return "Variable impact: Situation dependent"
 
     def _get_current_player_id(self, obs: Dict[str, Any]) -> int:
         """Extract current player ID from observation.
@@ -1124,349 +1148,6 @@ class FreeCivPromptBuilder:
 
         return model_name
 
-    def _prepare_observation(self, observation: ObservationData) -> ObservationData:
-        """Prepare and normalize observation data.
 
-        Args:
-            observation: Raw observation from game
-
-        Returns:
-            Normalized observation dictionary
-
-        Raises:
-            TypeError: If observation is not a valid dictionary
-        """
-        if not isinstance(observation, dict):
-            raise TypeError(f"Expected dict, got {type(observation).__name__}")
-
-        state = self._safe_get(observation, "state")
-        if hasattr(state, "turn"):
-            return self._state_to_dict(state)
-        return observation
-
-    def _get_model_config(self, model_name: ModelName) -> ModelConfig:
-        """Get configuration for specified model.
-
-        Args:
-            model_name: Validated model name
-
-        Returns:
-            Model configuration dictionary
-        """
-        return self.model_configs.get(model_name, self.model_configs["gpt-5"])
-
-    def _compress_for_model(
-        self, obs_dict: ObservationData, model_config: ModelConfig
-    ) -> ObservationData:
-        """Compress observation based on model constraints.
-
-        Args:
-            obs_dict: Observation dictionary
-            model_config: Model configuration
-
-        Returns:
-            Compressed observation
-        """
-        return self.context_manager.compress_observation(
-            obs_dict, model_config["max_tokens"]
-        )
-
-    def _build_strategic_components(
-        self,
-        compressed_obs: ObservationData,
-        legal_actions: List[FreeCivAction],
-        player_id: int,
-    ) -> StrategicComponents:
-        """Build strategic summary and action components.
-
-        Args:
-            compressed_obs: Compressed observation
-            legal_actions: Available actions
-            player_id: Current player ID
-
-        Returns:
-            Dictionary with strategic_summary and prioritized_actions
-        """
-        strategic_summary = self.observation_builder.build_strategic_summary(
-            compressed_obs, player_id
-        )
-        prioritized_actions = self.observation_builder.format_prioritized_actions(
-            legal_actions, compressed_obs
-        )
-
-        return {
-            "strategic_summary": strategic_summary,
-            "prioritized_actions": prioritized_actions,
-        }
-
-    def _generate_prompt(
-        self,
-        model_name: ModelName,
-        phase: GamePhase,
-        compressed_obs: ObservationData,
-        player_id: int,
-        strategic_components: StrategicComponents,
-    ) -> str:
-        """Generate the final prompt using template and data.
-
-        Args:
-            model_name: Validated model name
-            phase: Game phase
-            compressed_obs: Compressed observation
-            player_id: Current player ID
-            strategic_components: Strategic summary and actions
-
-        Returns:
-            Formatted prompt string
-        """
-        # Get template for model and phase
-        phase_templates = self.templates[phase]
-        template = phase_templates.get(model_name, phase_templates["gpt-5"])
-
-        # Prepare template parameters
-        template_params = self._prepare_template_parameters(
-            compressed_obs, player_id, strategic_components
-        )
-
-        # Fill template with data
-        return template.format(**template_params)
-
-    def _prepare_template_parameters(
-        self,
-        compressed_obs: ObservationData,
-        player_id: int,
-        strategic_components: StrategicComponents,
-    ) -> Dict[str, Any]:
-        """Prepare all parameters for template formatting.
-
-        Args:
-            compressed_obs: Compressed observation
-            player_id: Current player ID
-            strategic_components: Strategic summary and actions
-
-        Returns:
-            Dictionary of template parameters
-        """
-        return {
-            "turn": self._safe_get(compressed_obs, "turn", 0),
-            "player_name": self._get_player_name(compressed_obs, player_id),
-            "position": self._get_position_string(compressed_obs, player_id),
-            "score": self._get_player_score(compressed_obs, player_id),
-            "victory_type": self._detect_victory_type(compressed_obs, player_id),
-            "victory_progress": self._calculate_victory_progress(
-                compressed_obs, player_id
-            ),
-            "strategic_summary": strategic_components["strategic_summary"],
-            "prioritized_actions": strategic_components["prioritized_actions"],
-        }
-
-    def _safe_get(
-        self, data: Dict[str, Any], key: str, default: Optional[T] = None
-    ) -> Optional[T]:
-        """Safely get value from dictionary with error handling.
-
-        Args:
-            data: Dictionary to access
-            key: Key to retrieve
-            default: Default value if key not found
-
-        Returns:
-            Value at key or default
-        """
-        try:
-            if isinstance(data, dict):
-                return data.get(key, default)
-            return default
-        except (TypeError, AttributeError):
-            return default
-
-    def _state_to_dict(self, state) -> Dict[str, Any]:
-        """Convert FreeCivState object to dictionary.
-
-        Args:
-            state: FreeCivState object
-
-        Returns:
-            Dictionary representation of the state
-        """
-        # Simple conversion - in practice this would be more comprehensive
-        players_raw = getattr(state, "players", {})
-
-        # Convert players to proper dictionary format
-        players_dict = {}
-        if isinstance(players_raw, dict):
-            for player_id, player_obj in players_raw.items():
-                if hasattr(player_obj, "score"):
-                    players_dict[player_id] = {
-                        "score": getattr(player_obj, "score", 0),
-                        "gold": getattr(player_obj, "gold", 0),
-                        "name": getattr(player_obj, "name", f"Player {player_id}"),
-                    }
-                else:
-                    players_dict[player_id] = player_obj
-
-        return {
-            "turn": getattr(state, "turn", 0),
-            "players": players_dict,
-            "units": getattr(state, "units", []),
-            "cities": getattr(state, "cities", []),
-        }
-
-    def _detect_game_phase(self, obs: ObservationData) -> GamePhase:
-        """Detect current game phase based on turn number and state.
-
-        Args:
-            obs: Observation dictionary
-
-        Returns:
-            Game phase string ('early_game', 'mid_game', 'late_game')
-        """
-        turn = obs.get("turn", 0)
-
-        if turn <= CONFIG.EARLY_GAME_TURN_LIMIT:
-            return "early_game"
-        if turn <= CONFIG.MID_GAME_TURN_LIMIT:
-            return "mid_game"
-        return "late_game"
-
-    def _get_player_name(self, obs: Dict[str, Any], player_id: int = 1) -> str:
-        """Get current player name from observation.
-
-        Args:
-            obs: Observation dictionary
-            player_id: Current player ID (default: 1)
-
-        Returns:
-            Player name string
-        """
-        players = obs.get("players", {})
-        if players and player_id in players:
-            return players[player_id].get("name", "Romans")
-        return "Romans"
-
-    def _get_position_string(self, obs: Dict[str, Any], player_id: int = 1) -> str:
-        """Get relative position string.
-
-        Args:
-            obs: Observation dictionary
-            player_id: Current player ID (default: 1)
-
-        Returns:
-            Position description string
-        """
-        players = obs.get("players", {})
-        if len(players) <= 1:
-            return "Solo game"
-
-        # Simple position calculation
-        our_score = players.get(player_id, {}).get("score", 0)
-        scores = [p.get("score", 0) for p in players.values()]
-        rank = sorted(scores, reverse=True).index(our_score) + 1
-
-        if rank == 1:
-            return "1st place"
-        if rank == 2:
-            return "2nd place"
-        if rank == 3:
-            return "3rd place"
-        return f"{rank}th place"
-
-    def _get_player_score(self, obs: Dict[str, Any], player_id: int = 1) -> int:
-        """Get current player score.
-
-        Args:
-            obs: Observation dictionary
-            player_id: Current player ID (default: 1)
-
-        Returns:
-            Player score
-        """
-        players = obs.get("players", {})
-        score = players.get(player_id, {}).get("score", 0)
-        # Handle mock objects or other non-int types
-        if hasattr(score, "return_value"):
-            return getattr(score, "return_value", 0)
-        try:
-            return int(score)
-        except (TypeError, ValueError):
-            return 0
-
-    def _calculate_victory_progress(
-        self, obs: Dict[str, Any], player_id: int = 1
-    ) -> int:
-        """Calculate progress toward victory condition.
-
-        Args:
-            obs: Observation dictionary
-            player_id: Current player ID (default: 1)
-
-        Returns:
-            Victory progress percentage (0-100)
-        """
-        # Simple heuristic based on score and turn
-        turn_raw = obs.get("turn", 0)
-        # Handle mock objects or other non-int types for turn
-        if hasattr(turn_raw, "return_value"):
-            turn = getattr(turn_raw, "return_value", 0)
-        else:
-            try:
-                turn = int(turn_raw)
-            except (TypeError, ValueError):
-                turn = 0
-
-        score = self._get_player_score(obs, player_id)
-
-        # Rough calculation - in practice this would be more sophisticated
-        progress = min(100, (score // 10) + (turn // 5))
-        return max(0, progress)
-
-    def _detect_victory_type(self, obs: Dict[str, Any], player_id: int = 1) -> str:
-        """Detect the most promising victory type based on game state.
-
-        Args:
-            obs: Observation dictionary
-            player_id: Current player ID (default: 1)
-
-        Returns:
-            Victory type string
-        """
-        turn = self._safe_get(obs, "turn", 0)
-        our_cities = self._safe_get(obs, "cities", [])
-        all_units = self._safe_get(obs, "units", [])
-        our_player_id = player_id
-
-        # Count our military units
-        our_units = [u for u in all_units if u.get("owner") == our_player_id]
-        military_units = [
-            u
-            for u in our_units
-            if u.get("type", "").lower() in CONFIG.MILITARY_UNIT_TYPES
-        ]
-
-        # Early game - focus on expansion
-        if turn < CONFIG.EARLY_GAME_TURN_LIMIT:
-            return "Expansion Victory"
-
-        # Analyze our strengths to determine best victory path
-        military_strength = len(military_units) / max(len(our_units), 1)
-        city_count = len(our_cities)
-
-        # High military ratio suggests domination victory
-        if (
-            military_strength > CONFIG.MILITARY_STRENGTH_THRESHOLD
-            and len(military_units) > CONFIG.MIN_MILITARY_UNITS_FOR_DOMINATION
-        ):
-            return "Domination Victory"
-
-        # Many cities suggest economic/cultural victory
-        if city_count >= CONFIG.CITY_COUNT_FOR_VICTORY:
-            if turn > CONFIG.MID_GAME_TURN_LIMIT:
-                return "Cultural Victory"
-            return "Economic Victory"
-
-        # Late game with few cities - likely science victory
-        if turn > CONFIG.ENDGAME_TURN_THRESHOLD:
-            return "Science Victory"
-
-        # Default fallback
-        return "Balanced Strategy"
+    # Legacy method cleanup completed - all old template and model config methods removed
+    # New architecture uses base class methods and external configuration files

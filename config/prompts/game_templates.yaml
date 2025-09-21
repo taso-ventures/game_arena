@@ -1,0 +1,147 @@
+# Unified game prompt templates that are equivalent across all models
+# These templates focus on entertaining strategies while providing sufficient
+# context for long-term reasoning and memory access.
+
+# Core template structure used across all games (neutral, no emojis)
+base_template: |
+  GAME ANALYSIS & STRATEGY - Turn {turn}
+  ==========================================
+
+  VICTORY OBJECTIVE: {victory_type} ({victory_progress}% complete)
+  CURRENT POSITION: {position} (Score: {score})
+
+  MEMORY CONTEXT:
+  {memory_context}
+
+  LONG-TERM STRATEGY:
+  {long_term_strategy}
+
+  {game_specific_content}
+
+  AVAILABLE ACTIONS:
+  {prioritized_actions}
+
+  REASONING FRAMEWORK:
+  1. Analyze current position and strategic situation
+  2. Evaluate potential moves and their consequences
+  3. Consider long-term strategic implications
+  4. Choose optimal action based on analysis
+
+  FORMAT YOUR RESPONSE: {response_format}
+
+# Game-specific content templates
+games:
+  freeciv:
+    early_game: |
+      FREECIV EARLY GAME PRIORITIES (Entertainment Focus):
+      • Explore with flair - seek dramatic terrain and strategic positions
+      • Establish cities in bold locations that tell a story
+      • Build infrastructure that supports an entertaining civilization
+      • Defend against barbarians with clever tactics
+
+      {strategic_summary}
+
+      EXPLORATION STRATEGY:
+      Create a narrative through your civilization's expansion. Each move
+      should contribute to an epic story of growth and discovery.
+
+      ENTERTAINMENT DIRECTIVE:
+      Focus on dramatic, bold moves that create interesting gameplay moments.
+      Consider unexpected strategies that surprise opponents while maintaining
+      strategic advantage. Balance risk and reward for maximum engagement.
+
+    mid_game: |
+      FREECIV MID GAME EXPANSION (Entertainment Focus):
+      • Execute bold military campaigns with tactical brilliance
+      • Engage in diplomacy that creates interesting alliances/rivalries
+      • Develop technologies that enable spectacular strategies
+      • Build wonders that showcase your civilization's uniqueness
+
+      {strategic_summary}
+
+      MILITARY DOCTRINE:
+      Lead armies with creativity and panache. Every battle should be
+      memorable, combining sound strategy with dramatic execution.
+
+      ENTERTAINMENT DIRECTIVE:
+      Focus on dramatic, bold moves that create interesting gameplay moments.
+      Consider unexpected strategies that surprise opponents while maintaining
+      strategic advantage. Balance risk and reward for maximum engagement.
+
+    late_game: |
+      FREECIV LATE GAME DOMINANCE (Entertainment Focus):
+      • Push for victory with spectacular final strategies
+      • Execute endgame plans that showcase strategic mastery
+      • Create climactic moments that define your civilization's legacy
+      • Balance multiple victory paths for maximum strategic options
+
+      {strategic_summary}
+
+      VICTORY PURSUIT:
+      Make your final moves legendary. The path to victory should be
+      as entertaining as the destination itself.
+
+      ENTERTAINMENT DIRECTIVE:
+      Focus on dramatic, bold moves that create interesting gameplay moments.
+      Consider unexpected strategies that surprise opponents while maintaining
+      strategic advantage. Balance risk and reward for maximum engagement.
+
+  # Note: Chess and Go continue to use the original PromptGeneratorText system
+  # from prompt_generation.py. Only FreeCiv uses this new enhanced system.
+
+# Memory context templates for different game phases
+memory_contexts:
+  exploration_phase: |
+    Recent discoveries and their strategic implications. Notable encounters
+    with other civilizations or barbarians. Key terrain features that will
+    influence long-term city placement and expansion routes.
+
+  development_phase: |
+    Infrastructure priorities and their entertainment value. Technology
+    research decisions and their strategic rationale. City specialization
+    plans that create interesting gameplay dynamics.
+
+  conflict_phase: |
+    Military engagements and their outcomes. Diplomatic relationships and
+    their evolution. Strategic pivots made in response to changing conditions.
+
+  endgame_phase: |
+    Victory condition pursuit strategies. Critical decisions that shaped
+    the civilization's destiny. Lessons learned that inform final moves.
+
+# Long-term strategy templates
+strategy_frameworks:
+  balanced_growth: |
+    Pursue steady expansion while maintaining strong defenses. Balance
+    economic development with military readiness. Create a resilient
+    civilization capable of adapting to changing circumstances.
+
+  aggressive_expansion: |
+    Execute bold territorial grabs and rapid expansion. Maintain forward
+    momentum through decisive action. Risk management through calculated
+    aggression and strategic positioning.
+
+  cultural_dominance: |
+    Build an inspiring civilization that influences others through example.
+    Focus on unique developments that showcase strategic creativity.
+    Win hearts and minds through spectacular achievements.
+
+  technological_supremacy: |
+    Race ahead in key technologies that enable strategic advantages.
+    Create technological synergies that compound strategic benefits.
+    Use innovation to overcome resource and positional disadvantages.
+
+# Response format templates for different models
+response_formats:
+  structured: |
+    Provide your analysis in clear sections with headers and numbered points.
+    End with: FINAL DECISION: [chosen action] because [strategic and entertainment reasoning]
+
+  conversational: |
+    Share your strategic thinking in a natural, engaging way. Explain your
+    reasoning as if discussing strategy with a fellow player.
+    Conclude with your chosen action and why it's both smart and entertaining.
+
+  concise: |
+    Present key analysis points efficiently. Focus on critical factors and
+    decisive reasoning. State your action choice with clear justification.

@@ -80,13 +80,19 @@ class TestFreeCivPromptBuilder(unittest.TestCase):
                 self.assertIsInstance(prompt, str)
                 self.assertGreater(len(prompt), 100)
 
-                # Check model-specific formatting
+                # Check unified template elements (same for all models now)
+                self.assertIn("GAME ANALYSIS & STRATEGY", prompt)
+                self.assertIn("VICTORY OBJECTIVE", prompt)
+                self.assertIn("MEMORY CONTEXT", prompt)
+                self.assertIn("LONG-TERM STRATEGY", prompt)
+                self.assertIn("ENTERTAINMENT DIRECTIVE", prompt)
+                self.assertIn("REASONING FRAMEWORK", prompt)
+
+                # Check model-specific response formatting
                 if model_name == "gpt-5":
-                    self.assertIn("STRATEGIC ANALYSIS", prompt)
-                    self.assertIn("json", prompt.lower())
+                    self.assertIn("FINAL DECISION:", prompt)
                 elif model_name == "claude":
-                    self.assertIn("<priorities>", prompt)
-                    self.assertIn("<actions>", prompt)
+                    self.assertIn("natural, engaging way", prompt)
                 elif model_name == "deepseek":
                     self.assertIn("Turn", prompt)
 
@@ -121,25 +127,36 @@ class TestFreeCivPromptBuilder(unittest.TestCase):
 
         for phase in phases:
             with self.subTest(phase=phase):
-                # Mock different turn numbers for different phases
+                # Create observation with different turn numbers for different phases
                 if phase == "early_game":
-                    self.mock_state.turn = 5
+                    turn = 5
                 elif phase == "mid_game":
-                    self.mock_state.turn = 100
+                    turn = 100
                 else:  # late_game
-                    self.mock_state.turn = 180
+                    turn = 180
+
+                # Use dict observation format that new builder expects
+                observation = {
+                    "turn": turn,
+                    "players": {1: {"score": 340, "name": "Romans"}},
+                    "units": [],
+                    "cities": []
+                }
 
                 prompt = self.prompt_builder.build_enhanced_prompt(
-                    observation={"state": self.mock_state},
+                    observation=observation,
                     legal_actions=self.legal_actions,
                     model_name="gpt-5",
                 )
 
                 if phase == "early_game":
+                    self.assertIn("early game priorities", prompt.lower())
                     self.assertIn("explore", prompt.lower())
                 elif phase == "mid_game":
-                    self.assertIn("expand", prompt.lower())
+                    self.assertIn("mid game expansion", prompt.lower())
+                    self.assertIn("expansion", prompt.lower())
                 else:  # late_game
+                    self.assertIn("late game dominance", prompt.lower())
                     self.assertIn("victory", prompt.lower())
 
     def test_action_prioritization(self):
