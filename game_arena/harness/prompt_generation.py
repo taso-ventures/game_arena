@@ -89,6 +89,28 @@ class PromptGeneratorText(PromptGeneratorSupportsText):
                 )
             case prompts.PromptTemplate.WITH_LEGAL_ACTIONS:
                 actual_template = prompts.PROMPT_TEMPLATE_WITH_LEGAL_ACTIONS
+            case prompts.PromptTemplate.FREECIV_ENHANCED:
+                # Import FreeCivPromptBuilder for enhanced FreeCiv prompts
+                from game_arena.harness.prompts.freeciv_prompts import \
+                    FreeCivPromptBuilder
+
+                # Extract required data from prompt_substitutions
+                observation = prompt_substitutions.get("observation")
+                legal_actions = prompt_substitutions.get("legal_actions", [])
+                model_name = prompt_substitutions.get("model_name", "gpt-5")
+
+                if observation is None:
+                    raise ValueError(
+                        "FREECIV_ENHANCED requires 'observation' in prompt_substitutions"
+                    )
+
+                # Use FreeCivPromptBuilder to generate enhanced prompt
+                builder = FreeCivPromptBuilder()
+                prompt_text = builder.build_enhanced_prompt(
+                    observation, legal_actions, model_name
+                )
+
+                return tournament_util.ModelTextInput(prompt_text=prompt_text)
             case _:
                 raise ValueError(f"Unsupported prompt template: {prompt_template}")
         return tournament_util.ModelTextInput(
