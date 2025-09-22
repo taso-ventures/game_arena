@@ -1,0 +1,8 @@
+# Development dependencies for Game Arena
+pylint>=2.15.0
+pyink>=0.3.0
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-timeout>=2.1.0
+websockets>=11.0.0
+tiktoken>=0.4.0

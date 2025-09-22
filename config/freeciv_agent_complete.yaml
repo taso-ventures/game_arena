@@ -1,0 +1,306 @@
+# FreeCiv LLM Agent - Complete Configuration File
+# This file contains all available configuration options with descriptions and examples
+
+# Model Configuration
+model:
+  # Model name - must match a supported model
+  # Supported: gpt-4, gpt-3.5-turbo, claude-opus-4, claude-sonnet-3.5, gemini-2.5-flash, deepseek
+  name: "gpt-4"
+
+  # Environment variable containing the API key
+  api_key_env: "OPENAI_API_KEY"
+
+  # Model-specific options
+  options:
+    max_tokens: 1000           # Maximum tokens in response
+    temperature: 0.7           # Randomness (0.0 = deterministic, 1.0 = random)
+    top_p: 0.9                # Nucleus sampling parameter
+    frequency_penalty: 0       # Reduce repetition (-2.0 to 2.0)
+    presence_penalty: 0        # Encourage new topics (-2.0 to 2.0)
+    timeout: 30                # Request timeout in seconds
+
+# Agent Configuration
+agent:
+  # Strategy for gameplay
+  # Options: balanced, aggressive_expansion, economic_focus, defensive_turtle, science_victory, opportunistic
+  strategy: "balanced"
+
+  # Number of previous actions to remember for context
+  memory_size: 10
+
+  # Enable rethinking when illegal moves are generated
+  enable_rethinking: true
+
+  # Maximum number of rethinking attempts
+  max_rethinks: 2
+
+  # Fallback to random legal action when all else fails
+  fallback_to_random: true
+
+  # Player ID for this agent instance
+  player_id: 1
+
+  # Enable strategy adaptation based on game state
+  enable_strategy_adaptation: true
+
+  # Interval for strategy evaluation (in turns)
+  strategy_adaptation_interval: 10
+
+# Server Configuration
+server:
+  # WebSocket URL for real-time communication
+  websocket_url: "ws://localhost:8443"
+
+  # HTTP API URL for state queries
+  api_url: "http://localhost:8080"
+
+  # Connection timeout in seconds
+  connection_timeout: 10
+
+  # Number of reconnection attempts
+  reconnect_attempts: 3
+
+  # Delay between reconnection attempts (seconds)
+  reconnect_delay: 5
+
+  # Keep connection alive
+  keep_alive: true
+
+  # Enable compression for messages
+  compression: true
+
+  # Maximum message size (bytes)
+  max_message_size: 1048576
+
+# Performance Configuration
+performance:
+  # Maximum concurrent model API requests
+  max_concurrent_requests: 5
+
+  # Request timeout in seconds
+  request_timeout: 30
+
+  # Number of retry attempts for failed requests
+  retry_attempts: 3
+
+  # Exponential backoff factor for retries
+  backoff_factor: 2
+
+  # Enable response caching
+  enable_caching: true
+
+  # Cache expiry time in seconds
+  cache_expiry: 300
+
+  # Enable request batching (experimental)
+  enable_batching: false
+
+  # Batch size for requests
+  batch_size: 5
+
+# Memory Configuration
+memory:
+  # Maximum memory size (overrides agent.memory_size if set)
+  max_size: 10
+
+  # Enable memory compression
+  enable_compression: true
+
+  # Memory cleanup interval in seconds
+  cleanup_interval: 300
+
+  # Token manager configuration
+  token_manager:
+    # Default approximation ratio for unknown models
+    default_approximation_ratio: 3.5
+
+    # Enable exact tokenization when available
+    enable_exact_tokenization: true
+
+    # Token count cache size
+    cache_size: 1000
+
+# Monitoring Configuration
+monitoring:
+  # Enable telemetry collection
+  enable_telemetry: true
+
+  # Telemetry reporting interval in seconds
+  telemetry_interval: 60
+
+  # Enable performance metrics
+  enable_metrics: true
+
+  # Metrics server port (0 = disabled)
+  metrics_port: 8090
+
+  # Health check endpoint
+  health_endpoint: "/health"
+
+  # Enable performance alerts
+  enable_alerts: true
+
+  # Alert thresholds
+  alerts:
+    max_response_time: 45      # Seconds
+    min_success_rate: 0.9      # 90%
+    max_memory_usage: 1024     # MB
+    max_error_rate: 0.1        # 10%
+
+# Logging Configuration
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+
+  # Log file path (empty = stdout only)
+  file: "logs/freeciv_agent.log"
+
+  # Maximum log file size in MB
+  max_file_size: 100
+
+  # Number of backup log files
+  backup_count: 5
+
+  # Log format
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+  # Enable JSON logging
+  json_format: false
+
+  # Log rotation interval: midnight, hour, minute
+  rotation: "midnight"
+
+# Security Configuration
+security:
+  # Enable input validation
+  enable_input_validation: true
+
+  # Maximum observation size in bytes
+  max_observation_size: 2097152  # 2MB
+
+  # Enable action validation
+  enable_action_validation: true
+
+  # API key rotation warning (days)
+  api_key_rotation_days: 30
+
+  # Maximum memory usage in MB
+  max_memory_usage: 2048
+
+  # Enable rate limiting
+  enable_rate_limiting: true
+
+  # Rate limit: requests per minute
+  rate_limit: 60
+
+# Development Configuration
+development:
+  # Enable debug mode
+  debug: false
+
+  # Enable verbose logging
+  verbose: false
+
+  # Enable profiling
+  enable_profiling: false
+
+  # Profiling output file
+  profile_output: "profile.stats"
+
+  # Enable mock mode (use mock servers)
+  mock_mode: false
+
+  # Mock response delay (seconds)
+  mock_delay: 0.1
+
+# Testing Configuration
+testing:
+  # Enable test mode
+  test_mode: false
+
+  # Use deterministic responses
+  deterministic: false
+
+  # Fixed random seed
+  random_seed: 42
+
+  # Skip expensive operations
+  skip_expensive_ops: false
+
+  # Timeout for tests
+  test_timeout: 60
+
+# Advanced Configuration
+advanced:
+  # Custom prompt templates
+  custom_prompts:
+    # Path to custom prompt files
+    template_dir: "prompts/custom"
+
+    # Override default templates
+    override_defaults: false
+
+  # Custom action parsers
+  custom_parsers:
+    # Enable custom action parsing
+    enabled: false
+
+    # Custom parser module
+    module: "custom.parsers"
+
+  # Plugin system
+  plugins:
+    # Enable plugin system
+    enabled: false
+
+    # Plugin directory
+    plugin_dir: "plugins"
+
+    # Auto-load plugins
+    auto_load: true
+
+  # Experimental features
+  experimental:
+    # Enable experimental features
+    enabled: false
+
+    # Parallel action generation
+    parallel_actions: false
+
+    # Multi-agent coordination
+    coordination: false
+
+# Environment-Specific Overrides
+environments:
+  # Development environment
+  development:
+    logging:
+      level: "DEBUG"
+    monitoring:
+      enable_telemetry: false
+    development:
+      debug: true
+      verbose: true
+
+  # Testing environment
+  testing:
+    agent:
+      fallback_to_random: true
+    testing:
+      test_mode: true
+      deterministic: true
+    performance:
+      request_timeout: 10
+
+  # Production environment
+  production:
+    logging:
+      level: "WARNING"
+      json_format: true
+    monitoring:
+      enable_alerts: true
+    security:
+      enable_input_validation: true
+      enable_rate_limiting: true
+    performance:
+      max_concurrent_requests: 10
