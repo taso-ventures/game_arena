@@ -76,26 +76,47 @@ python scripts/run_game.py freeciv --num_moves=10
 python scripts/run_game.py freeciv --check_setup
 ```
 
-#### FreeCiv Setup
+#### FreeCiv LLM Agent
 
-FreeCiv requires an external FreeCiv3D server running on port 8080. From the adjacent `freeciv3d` repository:
+The Game Arena now includes a sophisticated LLM-powered agent for FreeCiv3D with advanced features:
 
+**Features:**
+- 🎮 Six strategic approaches (balanced, aggressive, economic, defensive, science, opportunistic)
+- 🧠 Token-aware memory management with model-specific tokenization
+- 🔄 Rethinking sampler for illegal move recovery
+- 📊 Production telemetry and monitoring
+- 🐳 Complete Docker-based testing infrastructure
+
+**Quick Start:**
 ```bash
-cd ../freeciv3d
-docker-compose up
+# Start mock FreeCiv3D server for testing
+docker-compose -f docker-compose.e2e.yml up -d freeciv3d
+
+# Run the FreeCiv LLM agent
+python3 -m game_arena.harness.freeciv_llm_agent \
+  --config config/freeciv_agent.yaml \
+  --player-id 1
+
+# Run end-to-end tests
+./scripts/run-e2e-tests.sh
 ```
 
-Then test the FreeCiv integration:
-
-```bash
-# Test connection to FreeCiv3D server
-python scripts/test_freeciv_connection.py
-
-# Run FreeCiv demo
-python -m game_arena.harness.freeciv_harness_demo
+**Configuration:**
+```yaml
+# config/freeciv_agent.yaml
+model:
+  name: "gpt-4"
+  api_key_env: "OPENAI_API_KEY"
+agent:
+  strategy: "balanced"
+  memory_size: 10
+  enable_rethinking: true
+server:
+  websocket_url: "ws://localhost:8443"
+  api_url: "http://localhost:8080"
 ```
 
-For detailed FreeCiv setup and testing instructions, see [TESTING_FREECIV.md](TESTING_FREECIV.md).
+For comprehensive setup and deployment instructions, see [docs/freeciv_deployment_guide.md](docs/freeciv_deployment_guide.md).
 
 #### Docker Support
 

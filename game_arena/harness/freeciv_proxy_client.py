@@ -167,6 +167,8 @@ class FreeCivProxyClient:
       port: int = 8002,
       agent_id: Optional[str] = None,
       game_id: str = "default",
+      api_token: Optional[str] = None,
+      endpoint: str = "/llmsocket",
       heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
       state_cache_ttl: float = DEFAULT_STATE_CACHE_TTL,
       max_cache_entries: int = DEFAULT_MAX_CACHE_ENTRIES,
@@ -178,6 +180,8 @@ class FreeCivProxyClient:
           port: FreeCiv3D server port
           agent_id: Unique agent identifier
           game_id: Game session identifier
+          api_token: API token for authentication with FreeCiv3D LLM gateway
+          endpoint: WebSocket endpoint path (default: /llmsocket for FreeCiv3D LLM gateway)
           heartbeat_interval: Heartbeat interval in seconds
           state_cache_ttl: State cache TTL in seconds
           max_cache_entries: Maximum number of cache entries
@@ -186,13 +190,16 @@ class FreeCivProxyClient:
       self.port = port
       self.agent_id = agent_id or f"agent_{uuid.uuid4().hex[:8]}"
       self.game_id = game_id
+      self.api_token = api_token
+      self.endpoint = endpoint
       self.heartbeat_interval = heartbeat_interval
       self.state_cache_ttl = state_cache_ttl
       self.max_cache_entries = max_cache_entries
 
-      # Connection management
+      # Connection management - construct full WebSocket URL with endpoint
+      ws_url = f"ws://{host}:{port}{endpoint}/{port}"
       self.connection_manager = ConnectionManager(
-          ws_url=f"ws://{host}:{port}",
+          ws_url=ws_url,
           agent_id=self.agent_id,
           heartbeat_interval=heartbeat_interval,
       )
@@ -237,9 +244,16 @@ class FreeCivProxyClient:
           auth_message = {
               "type": "llm_connect",
               "agent_id": self.agent_id,
-              "game_id": self.game_id,
+              "timestamp": time.time(),
+              "data": {
+                  "api_token": self.api_token or "test-token-fc3d-001",
+                  "model": "gpt-4",
+                  "game_id": self.game_id,
+                  "capabilities": ["move", "build", "research"]
+              }
           }
 
+          logger.debug(f"Sending auth message: {auth_message}")
           await self.connection_manager.send_message(json.dumps(auth_message))
 
           # Wait for authentication response
@@ -251,7 +265,7 @@ class FreeCivProxyClient:
                   logger.error(f"Invalid authentication response: {e}")
                   return False
 
-              if auth_data.get("status") == "ready":
+              if auth_data.get("type") == "auth_success":
                   self.player_id = auth_data.get("player_id")
                   logger.info(
                       f"Successfully authenticated as player {self.player_id}"
