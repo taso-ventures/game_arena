@@ -143,7 +143,7 @@ class FreeCivStateSynchronizer:
     """
     # Fetch state with timeout
     state_data = await asyncio.wait_for(
-        proxy_client.get_game_state(), timeout=self.sync_timeout
+        proxy_client.get_state(), timeout=self.sync_timeout
     )
 
     # Validate state data structure
@@ -181,9 +181,9 @@ class FreeCivStateSynchronizer:
       raise ValueError(f"Invalid turn number: {turn}")
 
     # Validate players data
-    players = state_data.get("players", {})
-    if not isinstance(players, dict):
-      raise ValueError("Players data must be a dictionary")
+    players = state_data.get("players", [])
+    if not isinstance(players, list):
+      raise ValueError("Players data must be a list")
 
     # Validate units data
     units = state_data.get("units", [])
@@ -227,8 +227,8 @@ class FreeCivStateSynchronizer:
         # Don't raise error for turn mismatch as it may be expected
 
     # Check player count consistency
-    server_players = len(state_data.get("players", {}))
-    obs_players = len(observation.get("players", {}))
+    server_players = len(state_data.get("players", []))
+    obs_players = len(observation.get("players", []))
 
     if obs_players > 0 and abs(server_players - obs_players) > 0:
       logging.warning(
@@ -255,11 +255,11 @@ class FreeCivStateSynchronizer:
     if not isinstance(state.players, dict):
       raise ValueError("State players must be a dictionary")
 
-    if not isinstance(state.units, list):
-      raise ValueError("State units must be a list")
+    if not isinstance(state.units, dict):
+      raise ValueError("State units must be a dictionary")
 
-    if not isinstance(state.cities, list):
-      raise ValueError("State cities must be a list")
+    if not isinstance(state.cities, dict):
+      raise ValueError("State cities must be a dictionary")
 
     # Validate that we can get legal actions (basic functionality test)
     try:
@@ -367,7 +367,7 @@ class FreeCivStateSynchronizer:
 
     while time.time() - start_time < timeout:
       # Fetch current state
-      state_data = await proxy_client.get_game_state()
+      state_data = await proxy_client.get_state()
       current_turn = state_data.get("turn", 0)
 
       # Check for backwards movement (error condition)

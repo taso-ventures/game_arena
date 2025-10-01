@@ -40,7 +40,7 @@ import asyncio
 import logging
 import random
 import time
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, TypedDict
 
 from absl import logging as absl_logging
 
@@ -56,6 +56,26 @@ from game_arena.harness.freeciv_strategy import StrategyManager
 from game_arena.harness.prompts.freeciv_prompts import FreeCivPromptBuilder
 
 logger = logging.getLogger(__name__)
+
+
+# Type definitions for FreeCiv agent
+class GameObservationDict(TypedDict, total=False):
+  """Type definition for game observation."""
+  serializedGameAndState: str
+  legalActions: List[int]
+  playerID: int
+
+
+class ActionSubmissionDict(TypedDict):
+  """Type definition for action submission."""
+  submission: int
+
+
+class RethinkObservationDict(TypedDict):
+  """Type definition for rethinking sampler observation."""
+  serializedGameAndState: str
+  legalActions: List[int]
+  playerID: int
 
 
 class FreeCivLLMAgent(
@@ -216,6 +236,24 @@ class FreeCivLLMAgent(
     Returns:
       Action integer for submission
     """
+    # Validate observation input for security
+    from game_arena.harness.freeciv_proxy_client import (
+        validate_observation_size, validate_array_length, validate_player_id
+    )
+
+    # Convert to dict if needed and validate size
+    observation_dict = dict(observation)
+    observation_dict = validate_observation_size(observation_dict)
+
+    # Validate legal actions array
+    legal_actions = observation_dict.get("legalActions", [])
+    legal_actions = validate_array_length(legal_actions, "legalActions")
+
+    # Validate player ID if present
+    if "playerID" in observation_dict:
+      player_id = validate_player_id(observation_dict["playerID"])
+      observation_dict["playerID"] = player_id
+
     # Extract game state from observation
     state = await self._extract_game_state(observation)
 
@@ -344,14 +382,39 @@ class FreeCivLLMAgent(
     if selected_action not in legal_actions:
       # Use rethinking sampler if available
       if self.sampler:
-        # TODO: Integrate with rethinking sampler
-        pass
+        absl_logging.info("Illegal action generated, using rethinking sampler")
+        try:
+          # Create observation compatible with rethinking sampler
+          rethink_observation = {
+              "serializedGameAndState": observation.get("serializedGameAndState", ""),
+              "legalActions": [self.action_converter.action_to_int(action, state) for action in legal_actions],
+              "playerID": observation.get("playerID", 0)
+          }
 
-      # Fall back to first legal action
-      absl_logging.warning(
-          "Generated action not legal, falling back to first option"
-      )
-      selected_action = legal_actions[0]
+          # Use rethinking sampler to get a valid action
+          rethink_result = await asyncio.to_thread(
+              self.sampler,
+              rethink_observation,
+              {}  # Environment info
+          )
+
+          # Convert back to FreeCivAction
+          if "submission" in rethink_result:
+            action_int = rethink_result["submission"]
+            selected_action = self.action_converter.int_to_action(action_int, state)
+            absl_logging.info("Rethinking sampler provided valid action")
+          else:
+            raise ValueError("Rethinking sampler did not return valid submission")
+
+        except Exception as e:
+          absl_logging.warning(f"Rethinking sampler failed: {e}, falling back to first legal action")
+          selected_action = legal_actions[0]
+      else:
+        # Fall back to first legal action
+        absl_logging.warning(
+            "Generated action not legal, falling back to first option"
+        )
+        selected_action = legal_actions[0]
 
     return selected_action
 
@@ -493,8 +556,27 @@ class FreeCivLLMAgent(
     # Get legal actions
     legal_actions = state.get_legal_actions(player_id)
 
+    # If no legal actions, wait and retry once (game might still be initializing)
     if not legal_actions:
-      raise ValueError(f"No legal actions for player {player_id}")
+      absl_logging.warning(
+          "No legal actions for player %d, waiting 2s for game initialization...",
+          player_id,
+      )
+      await asyncio.sleep(2.0)
+
+      # Re-sync state after waiting
+      state = await self.state_synchronizer.sync_state(proxy_client, observation)
+      legal_actions = state.get_legal_actions(player_id)
+
+      if not legal_actions:
+        # After retry, if still no actions, log details and raise
+        absl_logging.error(
+            "Still no legal actions for player %d after retry. Units: %d, Cities: %d",
+            player_id,
+            len([u for u in state.units.values() if u.owner == player_id]),
+            len([c for c in state.cities.values() if c.owner == player_id]),
+        )
+        raise ValueError(f"No legal actions for player {player_id}")
 
     # Generate action
     selected_action = await self._generate_action_with_llm(

@@ -106,8 +106,8 @@ memory:
   # Enable memory compression
   enable_compression: true
 
-  # Memory cleanup interval in seconds
-  cleanup_interval: 300
+  # Memory cleanup interval in seconds (reduced for high-frequency games)
+  cleanup_interval: 120
 
   # Token manager configuration
   token_manager:

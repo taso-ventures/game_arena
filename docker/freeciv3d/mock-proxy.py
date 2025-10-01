@@ -18,6 +18,7 @@
 import asyncio
 import json
 import logging
+import re
 import signal
 import sys
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,16 @@ import websockets
 class MockFreeCivProxy:
   """Mock proxy server that translates between Game Arena and FreeCiv3D."""
 
+  # Patterns for sensitive data that should be masked in logs
+  SENSITIVE_PATTERNS = [
+    (re.compile(r'("api_key":\s*")[^"]*(")', re.IGNORECASE), r'\1***MASKED***\2'),
+    (re.compile(r'("apikey":\s*")[^"]*(")', re.IGNORECASE), r'\1***MASKED***\2'),
+    (re.compile(r'("token":\s*")[^"]*(")', re.IGNORECASE), r'\1***MASKED***\2'),
+    (re.compile(r'("password":\s*")[^"]*(")', re.IGNORECASE), r'\1***MASKED***\2'),
+    (re.compile(r'("secret":\s*")[^"]*(")', re.IGNORECASE), r'\1***MASKED***\2'),
+    (re.compile(r'("authorization":\s*")[^"]*(")', re.IGNORECASE), r'\1***MASKED***\2'),
+  ]
+
   def __init__(self, port: int = 8443):
     self.port = port
     self.connected_clients = set()
@@ -36,6 +47,25 @@ class MockFreeCivProxy:
 
     logging.basicConfig(level=logging.INFO)
     self.logger = logging.getLogger(__name__)
+
+  def _mask_sensitive_data(self, message: str) -> str:
+    """Mask sensitive data in log messages."""
+    for pattern, replacement in self.SENSITIVE_PATTERNS:
+      message = pattern.sub(replacement, message)
+    return message
+
+  def _safe_log(self, level: int, message: str, *args):
+    """Log message with sensitive data masked."""
+    if args:
+      try:
+        formatted_message = message % args
+      except (TypeError, ValueError):
+        formatted_message = f"{message} {args}"
+    else:
+      formatted_message = message
+
+    safe_message = self._mask_sensitive_data(formatted_message)
+    self.logger.log(level, safe_message)
 
   async def start_server(self):
     """Start the proxy server."""
@@ -107,7 +137,7 @@ class MockFreeCivProxy:
     except websockets.exceptions.ConnectionClosed:
       self.logger.info(f"Client {client_id} disconnected")
     except Exception as e:
-      self.logger.error(f"Error handling client {client_id}: {e}")
+      self._safe_log(logging.ERROR, f"Error handling client {client_id}: {e}")
     finally:
       self.connected_clients.discard(websocket)
 
@@ -117,7 +147,8 @@ class MockFreeCivProxy:
       data = json.loads(message)
       message_type = data.get("type")
 
-      self.logger.debug(f"Received from client: {message_type}")
+      # Use safe logging for client messages that might contain sensitive data
+      self._safe_log(logging.DEBUG, f"Received from client: {message_type}")
 
       if message_type == "get_game_state":
         await self.handle_get_game_state(websocket, data)
@@ -139,7 +170,7 @@ class MockFreeCivProxy:
         "message": "Invalid JSON format"
       }))
     except Exception as e:
-      self.logger.error(f"Error processing message: {e}")
+      self._safe_log(logging.ERROR, f"Error processing message: {e}")
       await websocket.send(json.dumps({
         "type": "error",
         "message": "Internal server error"
@@ -326,7 +357,7 @@ class MockFreeCivProxy:
       except websockets.exceptions.ConnectionClosed:
         disconnected.add(client)
       except Exception as e:
-        self.logger.error(f"Error broadcasting to client: {e}")
+        self._safe_log(logging.ERROR, f"Error broadcasting to client: {e}")
         disconnected.add(client)
 
     # Remove disconnected clients

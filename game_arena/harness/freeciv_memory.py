@@ -469,7 +469,13 @@ class GameMemory:
     """
     self.max_size = max_size
     self.history = deque(maxlen=max_size)
-    self.cache = LRUCache[str, str](max_size=100, ttl_seconds=300.0)
+    # Use configurable cache settings
+    from game_arena.harness.freeciv_proxy_client import (
+        DEFAULT_SIMILARITY_CACHE_SIZE, DEFAULT_MEMORY_CACHE_TTL
+    )
+    self.cache = LRUCache[str, str](
+        max_size=DEFAULT_SIMILARITY_CACHE_SIZE, ttl_seconds=DEFAULT_MEMORY_CACHE_TTL
+    )
     self.summarizer = MemorySummarizer()
     self.token_manager = token_manager
 

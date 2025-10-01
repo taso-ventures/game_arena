@@ -55,9 +55,16 @@ class FreeCivActionConverter:
 
   def __init__(self):
     """Initialize FreeCiv action converter."""
-    # Cache for expensive conversion operations
-    self.action_cache = LRUCache[str, int](max_size=1000, ttl_seconds=300.0)
-    self.string_cache = LRUCache[str, str](max_size=1000, ttl_seconds=300.0)
+    # Cache for expensive conversion operations - configurable sizes and TTL
+    from game_arena.harness.freeciv_proxy_client import (
+        DEFAULT_ACTION_CACHE_SIZE, DEFAULT_STRING_CACHE_SIZE, DEFAULT_MEMORY_CACHE_TTL
+    )
+    self.action_cache = LRUCache[str, int](
+        max_size=DEFAULT_ACTION_CACHE_SIZE, ttl_seconds=DEFAULT_MEMORY_CACHE_TTL
+    )
+    self.string_cache = LRUCache[str, str](
+        max_size=DEFAULT_STRING_CACHE_SIZE, ttl_seconds=DEFAULT_MEMORY_CACHE_TTL
+    )
 
     logging.debug("FreeCivActionConverter initialized")
 
@@ -75,9 +82,17 @@ class FreeCivActionConverter:
     Raises:
       ValueError: If action cannot be converted or is invalid
     """
-    # Determine player ID
+    # Validate inputs
+    if not isinstance(action, FreeCivAction):
+      raise ValueError(f"Expected FreeCivAction, got {type(action)}")
+
+    # Determine and validate player ID
     if player_id is None:
       player_id = self._extract_player_id(action, state)
+
+    # Validate player ID using security function
+    from game_arena.harness.freeciv_proxy_client import validate_player_id
+    player_id = validate_player_id(player_id)
 
     # Create cache key based on action and state
     cache_key = self._create_action_cache_key(action, state, player_id)
@@ -124,9 +139,14 @@ class FreeCivActionConverter:
     Raises:
       ValueError: If action_int is invalid or out of range
     """
-    # Determine player ID
+    # Validate action integer input
+    from game_arena.harness.freeciv_proxy_client import validate_action_id, validate_player_id
+    action_int = validate_action_id(action_int)
+
+    # Determine and validate player ID
     if player_id is None:
       player_id = self._extract_current_player_id(state)
+    player_id = validate_player_id(player_id)
 
     legal_actions = state.get_legal_actions(player_id)
 
