@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright 2025 The game_arena Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,9 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FreeCiv prompt builder for enhanced prompt generation."""
+set -e
 
-from game_arena.harness.prompts.freeciv_prompts import FreeCivPromptBuilder
-from game_arena.harness.prompt_templates import PromptTemplate
+echo "Starting Mock FreeCiv3D Server..."
 
-__all__ = ["FreeCivPromptBuilder", "PromptTemplate"]
+# Create log directories
+mkdir -p /var/log/supervisor
+
+# Wait for network to be ready
+echo "Waiting for network initialization..."
+sleep 2
+
+# Start services with supervisor
+echo "Starting services with supervisor..."
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/freeciv3d.conf

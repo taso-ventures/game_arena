@@ -35,3 +35,6 @@ AGENTS.md
 CLAUDE.md
 Technical Spec.md
 .cursor/*
+
+# Environment variables with secrets
+.env
