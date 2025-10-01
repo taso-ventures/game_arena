@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import random
+import copy
 import re
 import time
 import uuid
@@ -717,7 +718,13 @@ class FreeCivProxyClient:
               "data": auth_data
           }
 
-          logger.debug(f"Sending auth message: {auth_message}")
+          # Log the authentication message without sensitive api_token
+          # Make a deep copy to ensure no references remain to the original
+          auth_message_log = copy.deepcopy(auth_message)
+          # Remove or redact sensitive data before logging
+          if "data" in auth_message_log and "api_token" in auth_message_log["data"]:
+              auth_message_log["data"]["api_token"] = "***REDACTED***"
+          logger.debug("Sending auth message: %s", json.dumps(auth_message_log))
           await self.connection_manager.send_message(json.dumps(auth_message))
 
           # Wait for authentication response
