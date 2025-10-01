@@ -3,11 +3,14 @@
 
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies including CMake and Clang for OpenSpiel
 RUN apt-get update && apt-get install -y \
     build-essential \
+    cmake \
+    clang \
     curl \
     git \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

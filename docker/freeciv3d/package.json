@@ -1,0 +1,17 @@
+{
+  "name": "mock-freeciv3d-server",
+  "version": "1.0.0",
+  "description": "Mock FreeCiv3D server for Game Arena end-to-end testing",
+  "main": "mock-server.js",
+  "scripts": {
+    "start": "node mock-server.js",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "dependencies": {
+    "ws": "^8.14.2"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "license": "Apache-2.0"
+}

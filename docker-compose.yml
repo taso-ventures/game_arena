@@ -1,5 +1,6 @@
 services:
   game-arena:
+    platform: linux/amd64  # Use x86_64 emulation for faster build
     build:
       context: .
       dockerfile: Dockerfile
@@ -21,7 +22,8 @@ services:
       - GAME_TYPE=${GAME_TYPE:-chess}
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-    network_mode: host
+    networks:
+      - freeciv3d_default
     ports:
       # Expose ports for debugging/monitoring
       - "9000:9000"
@@ -32,6 +34,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+
+networks:
+  freeciv3d_default:
+    external: true
 
 volumes:
   pip-cache:

@@ -561,8 +561,10 @@ class FreeCivSoftParser(parsers.SoftMoveParser):
         """
         super().__init__("freeciv")
         self._config = config or DEFAULT_CONFIG
+        # Use configurable cache settings
+        from game_arena.harness.freeciv_proxy_client import DEFAULT_MEMORY_CACHE_TTL
         self._similarity_cache = LRUCache[str, float](
-            max_size=self._config.max_cache_size, ttl_seconds=300.0  # 5 minute TTL
+            max_size=self._config.max_cache_size, ttl_seconds=DEFAULT_MEMORY_CACHE_TTL
         )
         self._legal_moves_hash = None  # Track when legal moves change
         self._cache_lock = threading.RLock()  # Thread safety for cache operations
