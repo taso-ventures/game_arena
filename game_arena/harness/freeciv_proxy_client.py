@@ -796,7 +796,7 @@ class FreeCivProxyClient:
       )
 
       # Message handling
-      self.message_handler = MessageHandler()
+      self.message_handler = MessageHandler(client=self)
       self.message_queue = MessageQueue()
       self.protocol_translator = ProtocolTranslator()
 
@@ -1552,6 +1552,14 @@ class ConnectionManager:
 class MessageHandler:
   """Handles incoming messages from FreeCiv server."""
 
+  def __init__(self, client: Optional['FreeCivProxyClient'] = None):
+      """Initialize message handler.
+
+      Args:
+          client: Reference to FreeCivProxyClient for storing state
+      """
+      self.client = client
+
   async def handle_message(self, message: Dict[str, Any]) -> None:
       """Route message to appropriate handler.
 
@@ -1574,6 +1582,9 @@ class MessageHandler:
           await self.handle_error(message)
       elif msg_type == "pong":
           await self.handle_pong(message)
+      elif msg_type in ["welcome", "llm_connect", "game_ready"]:
+          # Informational messages from server - log at debug level
+          logger.debug(f"Server info message: {msg_type}")
       else:
           logger.warning(f"Unknown message type: {msg_type}")
 
@@ -1726,13 +1737,14 @@ class MessageHandler:
           f"   Details: {error_details}"
       )
 
-      # Store last error for get_state() retry logic to access
-      self.last_error = {
-          "code": error_code,
-          "message": error_message,
-          "details": error_details,
-          "timestamp": time.time()
-      }
+      # Store last error in client for get_state() retry logic to access
+      if self.client:
+          self.client.last_error = {
+              "code": error_code,
+              "message": error_message,
+              "details": error_details,
+              "timestamp": time.time()
+          }
 
 
 class ProtocolTranslator:
