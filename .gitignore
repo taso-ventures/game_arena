@@ -38,3 +38,18 @@ Technical Spec.md
 
 # Environment variables with secrets
 .env
+
+# Diagnostic and debug scripts (development only)
+diagnose_legal_actions.py
+test_parser_extraction.py
+test_players_conversion_integration.py
+verify_websocket_limits.py
+
+# Development documentation (not for commit)
+ACTION_VALIDATION_FIX_SUMMARY.md
+FREECIV_GAME_INITIALIZATION_ISSUE.md
+FREECIV_SERVER_ACTION_REJECTION_HANDOFF.md
+TEST_RESULTS.md
+WEBSOCKET_SIZE_FIX.md
+INTEGRATION_TEST_RESULTS_FINAL.md
+FINAL_INTEGRATION_STATUS.md
