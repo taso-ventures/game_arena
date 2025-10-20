@@ -135,13 +135,44 @@ strategy_frameworks:
 response_formats:
   structured: |
     Provide your analysis in clear sections with headers and numbered points.
-    End with: FINAL DECISION: [chosen action] because [strategic and entertainment reasoning]
+
+    ACTION FORMAT REQUIREMENT:
+    You MUST respond with your chosen action in one of these EXACT formats:
+
+    1. Canonical format (copy from available actions):
+       - Unit movement: unit_move_unit(101)_to(2,3)
+       - City production: city_production_city(5)_target(Warrior)
+       - Tech research: tech_research_player(1)_target(Alphabet)
+       - Unit attack: unit_attack_unit(101)_target(205)
+       - Unit fortify: unit_fortify_unit(101)
+
+    2. JSON format (alternative):
+       {"action_type": "tech_research", "actor_id": 1, "target": {"value": "Alphabet"}}
+
+    End with: FINAL DECISION: [action in EXACT format from above] because [strategic and entertainment reasoning]
+
+    EXAMPLE:
+    FINAL DECISION: tech_research_player(1)_target(Writing) because it unlocks Libraries for science boost and supports our cultural dominance strategy.
 
   conversational: |
     Share your strategic thinking in a natural, engaging way. Explain your
     reasoning as if discussing strategy with a fellow player.
-    Conclude with your chosen action and why it's both smart and entertaining.
+
+    ACTION FORMAT REQUIREMENT:
+    When stating your action choice, use the EXACT format from the available actions list.
+    Copy the action string exactly as shown (e.g., unit_move_unit(101)_to(2,3)).
+
+    Conclude with your chosen action in the exact format and explain why it's both smart and entertaining.
+
+    EXAMPLE:
+    "I'm going with tech_research_player(1)_target(Pottery) because it opens up granaries for population growth!"
 
   concise: |
     Present key analysis points efficiently. Focus on critical factors and
-    decisive reasoning. State your action choice with clear justification.
+    decisive reasoning.
+
+    ACTION FORMAT: Copy the exact action string from the available actions list.
+    State your action choice using the precise format shown (e.g., city_production_city(5)_target(Warrior)).
+
+    EXAMPLE:
+    Analysis: Need military. Choice: city_production_city(5)_target(Warrior) - strengthens defense.

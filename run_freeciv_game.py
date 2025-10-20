@@ -201,8 +201,10 @@ async def run_freeciv_game():
         print(colored("✓ Player 2 connected", "green"))
 
         # Wait for game to start (triggered when 2nd player connects)
-        print(colored("⏳ Waiting for game to start with both players (25s)...", "yellow"))
-        await asyncio.sleep(25)  # Wait for nation selection (10s) + game start (15s) - extra buffer
+        # CRITICAL FIX: Reduced from 35s to 12s to prevent civserver timeout (--quitidle 20)
+        # Timing: 2-3s nation selection + 2-3s player_id assignment + 7s buffer = 12s total
+        print(colored("⏳ Waiting for game to start with both players (12s)...", "yellow"))
+        await asyncio.sleep(12)  # Wait for nation selection + async registration + game start
 
         # Create LLM models
         print(colored("Creating LLM agents...", "blue"))
@@ -232,6 +234,22 @@ async def run_freeciv_game():
         print(colored(f"✓ Created agents:", "green"))
         print(f"  Player 1: {_PLAYER1_MODEL.value.upper()} ({_STRATEGY1.value})")
         print(f"  Player 2: {_PLAYER2_MODEL.value.upper()} ({_STRATEGY2.value})")
+
+        # Display spectator URLs
+        print(colored("\n" + "=" * 60, "cyan"))
+        print(colored("📺 SPECTATOR MODE", "cyan"))
+        print(colored("=" * 60, "cyan"))
+        print(f"Game ID: {game_id}")
+        print(f"\nLLM Gateway Spectator URL:")
+        spectator_url = f"http://localhost:8080/webclient/spectator.jsp?game_id={game_id}&port=8003"
+        print(colored(f"  {spectator_url}", "green"))
+        print(f"\nDirect FreeCiv Server URLs (if game on port 6000):")
+        print(f"  http://localhost:8080/webclient/spectator.jsp?game_id={game_id}&port=6000")
+        print(f"\n🔧 Debug Commands:")
+        print(f"  Check LLM Gateway logs: docker exec fciv-net grep '{game_id}' /docker/llm-gateway/logs/*.log 2>/dev/null")
+        print(f"  Check proxy logs: docker exec fciv-net cat /docker/logs/freeciv-proxy-8002.log | grep '{game_id}'")
+        print(f"  WebSocket test: wscat -c ws://localhost:8003/ws/spectator/{game_id}")
+        print(colored("=" * 60 + "\n", "cyan"))
 
         # Game loop
         print(colored(f"\\nStarting FreeCiv LLM vs LLM game (max {_MAX_TURNS.value} turns)...", "green"))

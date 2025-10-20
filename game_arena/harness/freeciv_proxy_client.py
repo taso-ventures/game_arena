@@ -25,7 +25,7 @@ import time
 import uuid
 from collections import OrderedDict
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, TypedDict
+from typing import Any, Callable, Dict, List, Optional, TypedDict, Union
 
 import websockets
 from websockets.client import WebSocketClientProtocol
@@ -87,9 +87,9 @@ class RateLimiterStatsDict(TypedDict):
   buckets: Dict[str, Dict[str, float]]
 
 # Security constants - these should be configurable in production
-MAX_JSON_SIZE = 1_000_000  # 1MB limit for JSON messages
+MAX_JSON_SIZE = 5_000_000  # 5MB limit for JSON messages
 MAX_JSON_DEPTH = 100  # Maximum nesting depth to prevent DoS
-MAX_WEBSOCKET_SIZE = 10**6  # 1MB limit for WebSocket messages
+MAX_WEBSOCKET_SIZE = 5 * 10**6  # 5MB limit for WebSocket messages
 MAX_WEBSOCKET_QUEUE = 32  # Maximum queued messages
 WEBSOCKET_CLOSE_TIMEOUT = 5.0  # Timeout for WebSocket close operations
 
@@ -657,6 +657,8 @@ class FreeCivProxyClient:
       self.player_id: Optional[int] = None
       self.state_cache: OrderedDict[str, Any] = OrderedDict()
       self.last_state_update = 0
+      self.last_error: Optional[Dict[str, Any]] = None  # Store last error for retry logic
+      self.last_action_error: Optional[Dict[str, Any]] = None  # Store last action rejection for debugging
 
       # Background tasks
       self._heartbeat_task: Optional[asyncio.Task] = None
@@ -745,6 +747,12 @@ class FreeCivProxyClient:
                       f"Successfully authenticated as player {self.player_id}"
                   )
 
+                  # Server now sends only ONE auth_success message with player_id already assigned
+                  # The server waits for PACKET_CONN_INFO before sending auth_success
+                  # So player_id should always be set
+                  if self.player_id is None:
+                      logger.warning("Received auth_success but player_id is None - server may not have assigned player yet")
+
                   # Start background tasks
                   await self._start_background_tasks()
                   return True
@@ -769,11 +777,18 @@ class FreeCivProxyClient:
       self.player_id = None
       self.state_cache.clear()
 
-  async def get_state(self, format_type: str = "llm_optimized") -> GameStateDict:
-      """Get current game state.
+  async def get_state(
+      self,
+      format_type: str = "llm_optimized",
+      max_retries: int = 3,
+      retry_delay: float = 2.0
+  ) -> GameStateDict:
+      """Get current game state with retry logic for E122 errors.
 
       Args:
           format_type: State format ("llm_optimized", "minimal", etc.)
+          max_retries: Maximum retry attempts for E122 errors (player not ready)
+          retry_delay: Delay between retries in seconds
 
       Returns:
           Current game state dictionary
@@ -816,41 +831,83 @@ class FreeCivProxyClient:
               if k != "_timestamp"
           }
 
-      # Request fresh state
-      state_request = {
-          "type": "state_query",
-          "format": format_type,
-          "agent_id": self.agent_id,
-      }
+      # Request fresh state with retry logic for E122 errors
+      for attempt in range(max_retries):
+          state_request = {
+              "type": "state_query",
+              "format": format_type,
+              "agent_id": self.agent_id,
+          }
 
-      # Send directly for now (message queue can be used for batching later)
-      try:
-          await self.connection_manager.send_message(json.dumps(state_request))
-          response = await self._wait_for_response("state_update")
+          try:
+              logger.warning(f"🔍 SENDING STATE_QUERY (attempt {attempt + 1}/{max_retries}): {json.dumps(state_request)}")
+              await self.connection_manager.send_message(json.dumps(state_request))
 
-          if response:
-              # Record success with circuit breaker
-              self.circuit_breaker.record_success()
+              # Wait for either state_update or error response
+              response = await self._wait_for_response(["state_update", "error"])
+              logger.warning(f"🔍 RECEIVED response type: {response.get('type') if response else 'None'}")
 
-              # Evict old cache entries if limit exceeded using LRU
-              if len(self.state_cache) >= self.max_cache_entries:
-                  # Remove least recently used entry (first item in OrderedDict)
-                  oldest_key, _ = self.state_cache.popitem(last=False)
-                  logger.debug(f"Evicted LRU cache entry: {oldest_key}")
+              # Check if we received an error
+              if response and response.get("type") == "error":
+                  error_data = response.get("data", {})
+                  error_code = error_data.get("code", "UNKNOWN")
+                  error_message = error_data.get("message", "Unknown error")
 
-              # Cache the response with timestamp
-              self.state_cache[cache_key] = {**response, "_timestamp": current_time}
-              self.last_state_update = current_time
-              return response
+                  # E122 means player not ready yet - retry if attempts remain
+                  if error_code == "E122" and attempt < max_retries - 1:
+                      logger.warning(
+                          f"⏳ Player not ready (E122), retrying in {retry_delay}s "
+                          f"(attempt {attempt + 1}/{max_retries})"
+                      )
+                      await asyncio.sleep(retry_delay)
+                      continue  # Retry
+                  else:
+                      # Other errors or max retries reached - fail
+                      self.circuit_breaker.record_failure()
+                      raise RuntimeError(
+                          f"Failed to get game state - [{error_code}]: {error_message}"
+                      )
 
-          # Record failure if no response received
-          self.circuit_breaker.record_failure()
-          raise RuntimeError("Failed to get game state")
+              # Check if we received a valid state_update
+              if response and response.get("type") == "state_update":
+                  logger.warning(f"✓ STATE_UPDATE received: {json.dumps(response)[:300]}")
+                  # Record success with circuit breaker
+                  self.circuit_breaker.record_success()
 
-      except Exception as e:
-          # Record failure with circuit breaker
-          self.circuit_breaker.record_failure()
-          raise
+                  # Evict old cache entries if limit exceeded using LRU
+                  if len(self.state_cache) >= self.max_cache_entries:
+                      # Remove least recently used entry (first item in OrderedDict)
+                      oldest_key, _ = self.state_cache.popitem(last=False)
+                      logger.debug(f"Evicted LRU cache entry: {oldest_key}")
+
+                  # Cache the response with timestamp
+                  self.state_cache[cache_key] = {**response, "_timestamp": current_time}
+                  self.last_state_update = current_time
+                  return response
+
+              # No valid response - retry if attempts remain
+              if attempt < max_retries - 1:
+                  logger.warning(f"⚠️ No valid response, retrying in {retry_delay}s")
+                  await asyncio.sleep(retry_delay)
+                  continue
+              else:
+                  # Max retries exhausted
+                  self.circuit_breaker.record_failure()
+                  raise RuntimeError("Failed to get game state - no response")
+
+          except RuntimeError:
+              # Re-raise RuntimeError as-is (includes our error messages)
+              raise
+          except Exception as e:
+              # Other exceptions - retry if attempts remain
+              if attempt < max_retries - 1:
+                  logger.warning(f"⚠️ State query error: {e}, retrying in {retry_delay}s")
+                  await asyncio.sleep(retry_delay)
+                  continue
+              else:
+                  # Max retries exhausted
+                  self.circuit_breaker.record_failure()
+                  raise
 
   async def send_action(self, action: FreeCivAction) -> Dict[str, Any]:
       """Send action to FreeCiv server.
@@ -890,12 +947,34 @@ class FreeCivProxyClient:
       # Send directly for now (message queue can be used for batching later)
       try:
           await self.connection_manager.send_message(json.dumps(action_request))
-          response = await self._wait_for_response("action_result")
+          response = await self._wait_for_response(["action_result", "action_accepted", "action_rejected"])
 
           if response:
               # Record success with circuit breaker
               self.circuit_breaker.record_success()
-              return response
+
+              # Normalize response format for backward compatibility
+              msg_type = response.get("type", "")
+              if msg_type == "action_accepted":
+                  # New format - normalize to old format
+                  return {
+                      "success": True,
+                      "type": "action_accepted",
+                      "data": response.get("data", response)
+                  }
+              elif msg_type == "action_rejected":
+                  # New format - normalize to old format with error
+                  error_data = response.get("data", {})
+                  return {
+                      "success": False,
+                      "type": "action_rejected",
+                      "error": error_data.get("error_message", "Action rejected"),
+                      "error_code": error_data.get("error_code", "UNKNOWN"),
+                      "data": error_data
+                  }
+              else:
+                  # Old format or unknown - return as-is
+                  return response
 
           # Record failure if no response received
           self.circuit_breaker.record_failure()
@@ -1041,12 +1120,12 @@ class FreeCivProxyClient:
               await self.connection_manager.reconnect()
 
   async def _wait_for_response(
-      self, expected_type: str, timeout: float = 30.0
+      self, expected_type: Union[str, List[str]], timeout: float = 30.0
   ) -> Optional[Dict[str, Any]]:
-      """Wait for specific response type.
+      """Wait for specific response type(s).
 
       Args:
-          expected_type: Expected message type
+          expected_type: Expected message type or list of types
           timeout: Timeout in seconds
 
       Returns:
@@ -1059,6 +1138,9 @@ class FreeCivProxyClient:
           WebSocketException: If other WebSocket errors occur
       """
       start_time = time.time()
+
+      # Normalize expected_type to list for consistent handling
+      expected_types = [expected_type] if isinstance(expected_type, str) else expected_type
 
       while time.time() - start_time < timeout:
           # Check if still connected
@@ -1073,7 +1155,8 @@ class FreeCivProxyClient:
               if response:
                   try:
                       data = safe_json_loads(response)
-                      if data.get("type") == expected_type:
+                      # Check if message type matches any expected type
+                      if data.get("type") in expected_types:
                           return data
                       else:
                           # Handle other message types
@@ -1307,8 +1390,14 @@ class MessageHandler:
           await self.handle_state_update(message)
       elif msg_type == "action_result":
           await self.handle_action_result(message)
+      elif msg_type == "action_accepted":
+          await self.handle_action_accepted(message)
+      elif msg_type == "action_rejected":
+          await self.handle_action_rejected(message)
       elif msg_type == "turn_notification":
           await self.handle_turn_notification(message)
+      elif msg_type == "error":
+          await self.handle_error(message)
       elif msg_type == "pong":
           await self.handle_pong(message)
       else:
@@ -1332,6 +1421,94 @@ class MessageHandler:
       success = message.get("success", False)
       logger.debug(f"Action result: success={success}")
 
+  async def handle_action_accepted(self, message: Dict[str, Any]) -> None:
+      """Handle action accepted confirmation from server.
+
+      Args:
+          message: Action accepted message with structure:
+              {
+                  "type": "action_accepted",
+                  "action": {
+                      "type": "tech_research",
+                      "tech_name": "alphabet",
+                      "player_id": 1
+                  },
+                  "timestamp": 1760891128.11
+              }
+              OR (with data wrapper):
+              {
+                  "type": "action_accepted",
+                  "agent_id": "agent_player1_xxx",
+                  "data": {...}
+              }
+      """
+      # Handle both wrapped and unwrapped formats
+      if "data" in message:
+          action_data = message.get("data", {})
+          action = action_data.get("action", {})
+          timestamp = action_data.get("timestamp", "unknown")
+      else:
+          action = message.get("action", {})
+          timestamp = message.get("timestamp", "unknown")
+
+      logger.info(
+          f"✅ Action accepted by FreeCiv server:\n"
+          f"   Type: {action.get('type', 'unknown')}\n"
+          f"   Details: {action}\n"
+          f"   Timestamp: {timestamp}"
+      )
+
+  async def handle_action_rejected(self, message: Dict[str, Any]) -> None:
+      """Handle action rejected error from server.
+
+      Stores error details for debugging and analysis.
+
+      Args:
+          message: Action rejected message with structure:
+              {
+                  "type": "action_rejected",
+                  "error_code": "E041",
+                  "error_message": "Invalid technology...",
+                  "action": {...},
+                  "expected_format": {...},
+                  "timestamp": 1760891128.11
+              }
+              OR (with data wrapper):
+              {
+                  "type": "action_rejected",
+                  "agent_id": "agent_player1_xxx",
+                  "data": {...}
+              }
+      """
+      # Handle both wrapped and unwrapped formats
+      if "data" in message:
+          error_data = message.get("data", {})
+      else:
+          error_data = message
+
+      error_code = error_data.get("error_code", "UNKNOWN")
+      error_message = error_data.get("error_message", "Unknown error")
+      action = error_data.get("action", {})
+      expected_format = error_data.get("expected_format", {})
+
+      logger.error(
+          f"❌ Action rejected by FreeCiv server:\n"
+          f"   Error Code: {error_code}\n"
+          f"   Error Message: {error_message}\n"
+          f"   Action: {action}\n"
+          f"   Expected Format Example: {expected_format.get('json_example', 'N/A')}\n"
+          f"   Notes: {expected_format.get('notes', 'N/A')}"
+      )
+
+      # Store last action error for debugging (similar to handle_error pattern)
+      self.last_action_error = {
+          "code": error_code,
+          "message": error_message,
+          "action": action,
+          "expected_format": expected_format,
+          "timestamp": error_data.get("timestamp")
+      }
+
   async def handle_turn_notification(self, message: Dict[str, Any]) -> None:
       """Handle turn notification from server.
 
@@ -1349,49 +1526,73 @@ class MessageHandler:
       """
       logger.debug("Received pong")
 
+  async def handle_error(self, message: Dict[str, Any]) -> None:
+      """Handle error messages from server.
+
+      Stores error details for debugging and allows retry logic to access them.
+
+      Args:
+          message: Error message with structure:
+              {
+                  "type": "error",
+                  "data": {
+                      "code": "E122",
+                      "message": "Player not assigned yet",
+                      "details": {...}
+                  }
+              }
+      """
+      error_data = message.get("data", {})
+      error_code = error_data.get("code", "UNKNOWN")
+      error_message = error_data.get("message", "Unknown error")
+      error_details = error_data.get("details", {})
+
+      logger.error(
+          f"❌ Server error [{error_code}]: {error_message}\n"
+          f"   Details: {error_details}"
+      )
+
+      # Store last error for get_state() retry logic to access
+      self.last_error = {
+          "code": error_code,
+          "message": error_message,
+          "details": error_details,
+          "timestamp": time.time()
+      }
+
 
 class ProtocolTranslator:
   """Translates between Game Arena and FreeCiv protocol formats."""
 
   def to_freeciv_packet(self, action: FreeCivAction) -> Dict[str, Any]:
-      """Convert FreeCivAction to FreeCiv packet format.
+      """Convert FreeCivAction to proxy's expected action format.
+
+      The proxy expects actions in this format:
+      {'action_type': '...', 'actor_id': ..., 'target': {...}, 'parameters': {...}}
+
+      NOT the FreeCiv packet format! The proxy handles the packet conversion internally.
 
       Args:
           action: FreeCivAction to convert
 
       Returns:
-          FreeCiv packet dictionary
+          Action dictionary compatible with proxy's action validator
       """
-      if action.action_type == "unit_move":
-          return {
-              "pid": PacketID.UNIT_ORDERS.value,
-              "data": {
-                  "unit_id": action.actor_id,
-                  "dest_x": action.target.get("x", 0),
-                  "dest_y": action.target.get("y", 0),
-                  **action.parameters,
-              },
-          }
-      elif action.action_type == "city_production":
-          return {
-              "pid": PacketID.CITY_CHANGE_PRODUCTION.value,
-              "data": {
-                  "city_id": action.actor_id,
-                  "production_id": action.target,
-                  **action.parameters,
-              },
-          }
-      else:
-          # Default packet format for unknown actions
-          return {
-              "pid": PacketID.GENERIC.value,
-              "data": {
-                  "action_type": action.action_type,
-                  "actor_id": action.actor_id,
-                  "target": action.target,
-                  "parameters": action.parameters,
-              },
-          }
+      # Build base action structure
+      packet = {
+          "action_type": action.action_type,
+          "actor_id": action.actor_id,
+      }
+
+      # Add target if present (including empty dicts)
+      if action.target is not None:
+          packet["target"] = action.target
+
+      # Add parameters if present (including empty dicts)
+      if action.parameters is not None:
+          packet["parameters"] = action.parameters
+
+      return packet
 
   def from_freeciv_packet(self, packet: Dict[str, Any]) -> Dict[str, Any]:
       """Convert FreeCiv packet to Game Arena format.

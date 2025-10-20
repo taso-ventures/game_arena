@@ -677,9 +677,15 @@ class FreeCivAction(BaseModel):
                 r"produce\s+(\w+)\s+in\s+(\w+)",
             ],
             "tech_research": [
+                # Multi-word tech names (e.g., "Bronze Working", "Code of Laws")
+                # Capture until common stop words or punctuation
+                r"research\s+([A-Z][A-Za-z\s]+?)(?:\s+because|\s+to|\s+for|,|\.|$)",
+                r"study\s+([A-Z][A-Za-z\s]+?)(?:\s+because|\s+to|\s+for|,|\.|$)",
+                r"learn\s+([A-Z][A-Za-z\s]+?)(?:\s+because|\s+to|\s+for|,|\.|$)",
+                # Also match canonical format within natural language
+                r"tech_research_player\(\d+\)_target\(([^)]+)\)",
+                # Fallback for single word (lowercase, for partial matches)
                 r"research\s+(\w+)",
-                r"study\s+(\w+)",
-                r"learn\s+(\w+)",
             ],
             "unit_fortify": [
                 r"fortify\s+(?:unit\s+)?(\d+)",
@@ -860,6 +866,64 @@ class FreeCivAction(BaseModel):
             )
 
         return template.format(**format_args)
+
+    def __eq__(self, other: Any) -> bool:
+        """Compare actions based on semantic content, ignoring metadata.
+
+        Two actions are considered equal if they represent the same game action,
+        regardless of parsing metadata (confidence, parse_method, strategic_score,
+        description, priority).
+
+        This ensures that actions parsed from different sources (LLM output vs.
+        proxy legal_actions list) are correctly identified as equal when they
+        represent the same game action.
+
+        Args:
+            other: Object to compare with
+
+        Returns:
+            True if actions are semantically equivalent, False otherwise
+        """
+        if not isinstance(other, FreeCivAction):
+            return False
+
+        # Filter out metadata fields from parameters for comparison
+        def filter_metadata_params(params: Dict[str, Any]) -> Dict[str, Any]:
+            """Remove metadata fields that don't affect game semantics."""
+            return {k: v for k, v in params.items() if k not in ('description', 'priority')}
+
+        self_params = filter_metadata_params(self.parameters)
+        other_params = filter_metadata_params(other.parameters)
+
+        # Compare semantic fields only (not metadata)
+        return (
+            self.action_type == other.action_type
+            and self.actor_id == other.actor_id
+            and self.target == other.target
+            and self_params == other_params
+            and self.source == other.source
+        )
+
+    def __hash__(self) -> int:
+        """Hash based on semantic content for use in sets/dicts.
+
+        Must be consistent with __eq__ - if two actions are equal,
+        they must have the same hash.
+        """
+        # Filter out metadata fields from parameters (must match __eq__)
+        filtered_params = {k: v for k, v in self.parameters.items() if k not in ('description', 'priority')}
+
+        # Convert target dict to hashable tuple of items
+        target_tuple = tuple(sorted(self.target.items())) if self.target else ()
+        params_tuple = tuple(sorted(filtered_params.items())) if filtered_params else ()
+
+        return hash((
+            self.action_type,
+            self.actor_id,
+            target_tuple,
+            params_tuple,
+            self.source
+        ))
 
 
 class FreeCivTile(BaseModel):

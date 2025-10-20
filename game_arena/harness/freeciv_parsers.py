@@ -200,7 +200,20 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
                     )
                 return None
 
-        # Try JSON parsing first (most structured)
+        # Try exact canonical format FIRST (most reliable when LLM follows format)
+        canonical_action = self._try_parse_canonical_format(text)
+        if canonical_action:
+            if self._config.enable_performance_logging:
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                logging.info(
+                    "Parse completed: method=canonical_format, time=%.2fms, input_size=%d,"
+                    " success=True",
+                    elapsed_ms,
+                    len(text),
+                )
+            return canonical_action
+
+        # Try JSON parsing (most structured)
         json_action = self._try_parse_json(text)
         if json_action:
             if self._config.enable_performance_logging:
@@ -212,6 +225,19 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
                     len(text),
                 )
             return json_action
+
+        # Try Python repr parsing (handles LLM-generated dict formats)
+        python_repr_action = self._try_parse_python_repr(text)
+        if python_repr_action:
+            if self._config.enable_performance_logging:
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                logging.info(
+                    "Parse completed: method=python_repr, time=%.2fms, input_size=%d,"
+                    " success=True",
+                    elapsed_ms,
+                    len(text),
+                )
+            return python_repr_action
 
         # Try natural language parsing using FreeCivAction model
         natural_action = self._try_parse_natural_language(text, parser_input)
@@ -294,6 +320,70 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
 
         return result
 
+    def _try_parse_canonical_format(self, text: str) -> Optional[str]:
+        """Try to extract exact canonical format action strings.
+
+        This method looks for canonical action format strings that match the
+        expected FreeCiv action syntax. When the LLM outputs the exact canonical
+        format (as instructed in prompts), this should match and return it directly.
+
+        Looks for patterns like:
+        - tech_research_player(1)_target(Alphabet)
+        - unit_move_unit(101)_to(2,3)
+        - city_production_city(5)_target(Warrior)
+
+        Args:
+            text: Raw text that might contain canonical format
+
+        Returns:
+            Canonical action string if found, None otherwise
+        """
+        import re
+
+        # Security: Check input size
+        if len(text) > self._config.max_input_size:
+            return None
+
+        # Comprehensive canonical format patterns
+        # Order matters - more specific patterns first
+        canonical_patterns = [
+            # Tech research: tech_research_player(1)_target(Alphabet)
+            r'(tech_research_player\(\d+\)_target\([A-Za-z_\s]+\))',
+
+            # Unit movement: unit_move_unit(101)_to(2,3)
+            r'(unit_move_(?:unit|warrior|settler|worker)\(\d+\)_to\(\d+,\s*\d+\))',
+
+            # Unit attack: unit_attack_unit(101)_target(202)
+            r'(unit_attack_(?:unit|warrior|settler)\(\d+\)_target\(\d+\))',
+
+            # City production: city_production_city(5)_target(Warrior)
+            r'(city_production_(?:city|[A-Za-z]+)\(\d+\)_target\([A-Za-z_\s]+\))',
+
+            # City improvement: city_build_improvement_city(5)_target(Barracks)
+            r'(city_build_improvement_(?:city|[A-Za-z]+)\(\d+\)_target\([A-Za-z_\s]+\))',
+
+            # Unit fortify: unit_fortify_unit(101)
+            r'(unit_fortify_(?:unit|warrior)\(\d+\))',
+
+            # Unit explore: unit_explore_unit(101)
+            r'(unit_explore_(?:unit|scout)\(\d+\))',
+        ]
+
+        for pattern in canonical_patterns:
+            try:
+                match = self._protected_regex.search(pattern, text)
+                if match:
+                    canonical_string = match.group(1)
+                    if self._config.enable_performance_logging:
+                        logging.info("Found canonical format: %s", canonical_string)
+                    return canonical_string
+            except Exception as e:
+                if self._config.enable_debug_logging:
+                    logging.debug("Canonical pattern matching error: %s", e)
+                continue
+
+        return None
+
     def _try_parse_json(self, text: str) -> Optional[str]:
         """Try to parse JSON from text and convert to canonical action string.
 
@@ -344,6 +434,86 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
                 if self._config.enable_debug_logging:
                     logging.debug("Regex timeout or error in JSON parsing: %s", e)
                 continue  # Try next pattern
+
+        return None
+
+    def _try_parse_python_repr(self, text: str) -> Optional[str]:
+        """Try to parse Python dict representation from LLM output.
+
+        Handles formats like:
+        action_type='tech_research' actor_id=1 target={'value': 'Alphabet'}
+
+        Args:
+            text: Raw text that might contain Python repr format
+
+        Returns:
+            Canonical action string if parsing succeeds, None otherwise
+        """
+        import re
+        import ast
+
+        # Security: Check input size
+        if len(text) > self._config.max_input_size:
+            return None
+
+        try:
+            # Pattern to match Python-like attribute assignments
+            # Matches: action_type='tech_research' actor_id=1 target={'value': 'Alphabet'}
+            pattern = (
+                r"action_type\s*=\s*['\"](\w+)['\"]"
+                r".*?"
+                r"actor_id\s*=\s*(\d+)"
+                r".*?"
+                r"target\s*=\s*(\{[^}]+\})"
+            )
+
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                action_type = match.group(1)
+                actor_id = int(match.group(2))
+                target_str = match.group(3)
+
+                # Security: Limit target string size
+                if len(target_str) > 500:
+                    logging.debug("Target string too large, skipping Python repr parse")
+                    return None
+
+                # Safely parse the target dict using ast.literal_eval
+                try:
+                    target = ast.literal_eval(target_str)
+                except (ValueError, SyntaxError) as e:
+                    logging.debug(f"Failed to parse target dict: {e}")
+                    return None
+
+                # Convert to canonical format based on action type
+                if action_type == "tech_research" and isinstance(target, dict):
+                    tech_name = target.get('value', target.get('name', ''))
+                    if tech_name:
+                        return f"tech_research_player({actor_id})_target({tech_name})"
+
+                elif action_type == "city_production" and isinstance(target, dict):
+                    production = target.get('value', target.get('name', ''))
+                    if production:
+                        return f"city_production_city({actor_id})_target({production})"
+
+                elif action_type == "unit_move" and isinstance(target, dict):
+                    x = target.get('x')
+                    y = target.get('y')
+                    if x is not None and y is not None:
+                        return f"unit_move_unit({actor_id})_to({x},{y})"
+
+                elif action_type == "unit_attack" and isinstance(target, dict):
+                    target_id = target.get('id', target.get('value'))
+                    if target_id is not None:
+                        return f"unit_attack_unit({actor_id})_target({target_id})"
+
+                # Generic fallback for other action types
+                if isinstance(target, dict) and 'value' in target:
+                    return f"{action_type}_player({actor_id})_target({target['value']})"
+
+        except Exception as e:
+            if self._config.enable_debug_logging:
+                logging.debug(f"Python repr parsing failed: {e}")
 
         return None
 

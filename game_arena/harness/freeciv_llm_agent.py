@@ -366,20 +366,42 @@ class FreeCivLLMAgent(
     Returns:
       Selected FreeCivAction
     """
+    # Log available legal actions for debugging
+    absl_logging.debug(
+        "Generating action with %d legal options. Examples: %s",
+        len(legal_actions),
+        [self.action_converter.action_to_string(a) for a in legal_actions[:3]]
+    )
+
     # Build context-aware prompt
     prompt = self._build_context_aware_prompt(observation, state, legal_actions)
 
-    # Generate response using model
+    # Generate response using model (synchronous method)
     self._num_model_calls += 1
-    response = await self.model.generate_with_text_input(prompt)
+    response = self.model.generate_with_text_input(prompt)
 
     # Parse response to FreeCivAction
     selected_action = self._parse_llm_response(
         response.main_response, legal_actions
     )
 
-    # Validate action is legal
+    # Validate action is legal with detailed logging
     if selected_action not in legal_actions:
+      # Log what went wrong for debugging
+      absl_logging.warning(
+          "LLM generated illegal action: %s (type=%s, actor=%s, target=%s)",
+          self.action_converter.action_to_string(selected_action),
+          selected_action.action_type,
+          selected_action.actor_id,
+          selected_action.target
+      )
+      absl_logging.debug(
+          "Legal actions available (%d): %s",
+          len(legal_actions),
+          [self.action_converter.action_to_string(a) for a in legal_actions[:5]]
+      )
+      absl_logging.debug("LLM response (first 500 chars): %s", response.main_response[:500])
+
       # Use rethinking sampler if available
       if self.sampler:
         absl_logging.info("Illegal action generated, using rethinking sampler")
@@ -449,7 +471,7 @@ class FreeCivLLMAgent(
         memory_context=memory_context,
     )
 
-    return tournament_util.ModelTextInput(text=prompt_text)
+    return tournament_util.ModelTextInput(prompt_text=prompt_text)
 
   def _parse_llm_response(
       self, response_text: str, legal_actions: List[FreeCivAction]
@@ -480,12 +502,51 @@ class FreeCivLLMAgent(
     parsed_action_string = self.action_parser.parse(parser_input)
 
     if parsed_action_string:
+      # Validate canonical format before converting
+      if not self._is_valid_canonical_format(parsed_action_string):
+        absl_logging.warning(
+            "Parser returned potentially invalid format: %s",
+            parsed_action_string
+        )
+        absl_logging.debug("LLM response excerpt: %s", response_text[:300])
+
       # Convert back to FreeCivAction
       return self.action_converter.string_to_action(parsed_action_string)
     else:
       # Fallback to first legal action
       absl_logging.warning("Failed to parse LLM response, using fallback")
+      absl_logging.debug("LLM response: %s", response_text[:500])
       return legal_actions[0]
+
+  def _is_valid_canonical_format(self, action_string: str) -> bool:
+    """Validate that action string follows canonical format.
+
+    Args:
+      action_string: Action string to validate
+
+    Returns:
+      True if valid canonical format, False otherwise
+    """
+    import re
+
+    # Basic structure check: word_word(number) with optional _target(...) or _to(...)
+    canonical_pattern = r'^[a-z_]+(?:_[a-z]+)?\([^)]+\)(?:_(?:to|target)\([^)]+\))?$'
+
+    if not re.match(canonical_pattern, action_string):
+      return False
+
+    # Additional validation: common action types
+    valid_prefixes = [
+        'tech_research_player',
+        'unit_move_',
+        'unit_attack_',
+        'unit_fortify_',
+        'unit_explore_',
+        'city_production_',
+        'city_build_improvement_',
+    ]
+
+    return any(action_string.startswith(prefix) for prefix in valid_prefixes)
 
   def _record_action_in_memory(
       self,

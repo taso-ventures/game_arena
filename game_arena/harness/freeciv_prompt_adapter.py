@@ -137,7 +137,7 @@ class FreeCivPromptGeneratorAdapter(prompt_generation.PromptGeneratorText):
         len(legal_actions),
     )
 
-    return tournament_util.ModelTextInput(text=prompt_text)
+    return tournament_util.ModelTextInput(prompt_text=prompt_text)
 
   def _build_regular_prompt(
       self,

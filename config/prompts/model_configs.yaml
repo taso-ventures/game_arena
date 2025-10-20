@@ -3,6 +3,14 @@
 # that influence how game prompts are formatted and structured.
 
 models:
+  # OpenAI GPT models
+  gpt-4:
+    max_tokens: 4000
+    style: "structured"
+    reasoning: "chain_of_thought"
+    format: "json_with_explanation"
+    description: "OpenAI GPT-4 family with structured output"
+
   gpt-5:
     max_tokens: 4000
     style: "structured"
@@ -10,6 +18,22 @@ models:
     format: "json_with_explanation"
     description: "OpenAI's GPT-5 with structured output and detailed reasoning"
 
+  gpt:
+    max_tokens: 3500
+    style: "structured"
+    reasoning: "chain_of_thought"
+    format: "json_with_explanation"
+    description: "OpenAI GPT models (fallback)"
+
+  # Google Gemini models
+  gemini:
+    max_tokens: 3500
+    style: "structured"
+    reasoning: "step_by_step"
+    format: "json_with_explanation"
+    description: "Google Gemini models with structured reasoning"
+
+  # Anthropic Claude models
   claude:
     max_tokens: 3500
     style: "conversational"
@@ -17,6 +41,7 @@ models:
     format: "natural_with_tags"
     description: "Anthropic's Claude with natural conversation flow"
 
+  # DeepSeek models
   deepseek:
     max_tokens: 3000
     style: "concise"

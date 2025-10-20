@@ -312,7 +312,9 @@ class ContextManager:
                     if not isinstance(unit, dict):
                         continue
 
-                    unit_type = self._safe_get(unit, "type", "").lower()
+                    # Handle both integer type IDs (from proxy) and string names
+                    unit_type_raw = self._safe_get(unit, "type", "")
+                    unit_type = str(unit_type_raw).lower() if unit_type_raw else ""
                     if unit_type in CONFIG.MILITARY_UNIT_TYPES:
                         military_units.append(unit)
                     else:
@@ -922,21 +924,49 @@ class FreeCivPromptBuilder(BasePromptBuilder):
     def _prepare_observation(self, observation: ObservationData) -> Dict[str, Any]:
         """Prepare observation data for processing.
 
+        Converts players list to dict if needed for consistent access patterns.
+
         Args:
             observation: Raw observation data
 
         Returns:
-            Prepared observation dictionary
+            Prepared observation dictionary with players as dict
         """
         if isinstance(observation, dict):
-            return observation.copy()
+            obs_copy = observation.copy()
         else:
-            # Handle other observation formats if needed
             try:
-                return dict(observation)
+                obs_copy = dict(observation)
             except (TypeError, ValueError):
                 logging.warning(f"Could not convert observation of type {type(observation)}")
                 return {}
+
+        # Convert players list to dict if needed
+        if 'players' in obs_copy:
+            players = obs_copy['players']
+            if isinstance(players, list):
+                # Convert list to dict with player_id as key
+                players_dict = {}
+                for player in players:
+                    if isinstance(player, dict):
+                        # Try multiple possible ID field names (check for None explicitly to handle player_id=0)
+                        player_id = None
+                        if 'id' in player:
+                            player_id = player['id']
+                        elif 'player_id' in player:
+                            player_id = player['player_id']
+                        elif 'playerno' in player:
+                            player_id = player['playerno']
+
+                        if player_id is not None:
+                            players_dict[player_id] = player
+                obs_copy['players'] = players_dict
+            elif not isinstance(players, dict):
+                # Invalid type, replace with empty dict
+                logging.warning(f"Invalid players type: {type(players)}, replacing with empty dict")
+                obs_copy['players'] = {}
+
+        return obs_copy
 
     def _compress_for_model(self, obs: Dict[str, Any], model_config: Dict[str, Any]) -> Dict[str, Any]:
         """Compress observation to fit model token limits.
@@ -988,7 +1018,8 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         turn = obs.get('turn', 0)
 
         city_count = len(cities)
-        military_units = [u for u in units if u.get('type', '').lower() in CONFIG.MILITARY_UNIT_TYPES]
+        # Handle both integer type IDs (from proxy) and string names
+        military_units = [u for u in units if str(u.get('type', '')).lower() in CONFIG.MILITARY_UNIT_TYPES]
 
         # Simple heuristics for victory type determination
         if len(military_units) >= CONFIG.MIN_MILITARY_UNITS_FOR_DOMINATION:
@@ -1019,13 +1050,13 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         return self.observation_builder.build_strategic_summary(obs, player_id)
 
     def _build_prioritized_actions(self, legal_actions: List[FreeCivAction]) -> str:
-        """Build prioritized list of available actions.
+        """Build prioritized list of available actions in canonical format.
 
         Args:
             legal_actions: List of legal FreeCiv actions
 
         Returns:
-            Formatted string of prioritized actions
+            Formatted string of prioritized actions with canonical format
         """
         if not legal_actions:
             return "No actions currently available."
@@ -1036,15 +1067,22 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             priority = self._get_action_priority(action)
             action_groups[priority].append(action)
 
-        # Format prioritized actions
+        # Format prioritized actions with CANONICAL FORMAT for LLM to copy
         formatted_actions = []
+        formatted_actions.append("\nCopy the EXACT action string from below (do NOT modify the format):\n")
+
         for priority in sorted(action_groups.keys()):
             actions = action_groups[priority]
             priority_name = ActionPriority(priority).name.title()
             formatted_actions.append(f"\n{priority_name} Priority:")
-            for action in actions[:5]:  # Limit to 5 per priority
+
+            # Show top 10 actions per priority with full canonical format
+            for i, action in enumerate(actions[:10], 1):
+                # Get canonical string that LLM should copy exactly
+                canonical = self._action_to_canonical_string(action)
                 impact = self._assess_action_impact(action)
-                formatted_actions.append(f"• {action.action_type}: {impact}")
+                formatted_actions.append(f"{i}. {canonical}")
+                formatted_actions.append(f"   Impact: {impact}")
 
         return "\n".join(formatted_actions)
 
@@ -1086,6 +1124,35 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             return "Low-Medium impact: Positioning for future actions"
         else:
             return "Variable impact: Situation dependent"
+
+    def _action_to_canonical_string(self, action: FreeCivAction) -> str:
+        """Convert FreeCivAction to canonical string format for prompt display.
+
+        This generates the exact string format that the LLM should copy when
+        selecting an action. The format is designed to be unambiguous and
+        easily parseable.
+
+        Args:
+            action: FreeCivAction object to convert
+
+        Returns:
+            Canonical string representation (e.g., "unit_move_unit(101)_to(2,3)")
+
+        Examples:
+            >>> action = FreeCivAction("unit_move", 101, {"x": 2, "y": 3}, {}, "unit")
+            >>> self._action_to_canonical_string(action)
+            "unit_move_unit(101)_to(2,3)"
+        """
+        # Use the FreeCivActionConverter to generate canonical format
+        from game_arena.harness.freeciv_action_converter import FreeCivActionConverter
+
+        try:
+            converter = FreeCivActionConverter()
+            return converter.action_to_string(action)
+        except Exception as e:
+            # Fallback to basic format if conversion fails
+            logging.debug(f"Failed to convert action to canonical string: {e}")
+            return f"{action.action_type}_{action.source}({action.actor_id})"
 
     def _get_current_player_id(self, obs: Dict[str, Any]) -> int:
         """Extract current player ID from observation.

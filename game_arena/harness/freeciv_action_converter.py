@@ -279,10 +279,13 @@ class FreeCivActionConverter:
     Returns:
       Current player ID
     """
-    # Try to get current player from state
-    if hasattr(state, 'current_player') and state.current_player is not None:
-      return state.current_player
+    # Try to get current player from state method
+    if hasattr(state, 'current_player') and callable(state.current_player):
+      player_id = state.current_player()
+      if player_id is not None:
+        return player_id
 
+    # Try to get from internal attribute
     if hasattr(state, '_current_player_id') and state._current_player_id > 0:
       return state._current_player_id
 
@@ -438,7 +441,7 @@ class FreeCivActionConverter:
           actor_id=int(unit_id),
           target={"x": int(x), "y": int(y)},
           parameters={},
-          source=unit_type,
+          source="unit",
       )
 
     # Parse unit_attack format: unit_attack_warrior(101)_target(202)
@@ -452,7 +455,7 @@ class FreeCivActionConverter:
           actor_id=int(unit_id),
           target={"id": int(target_id)},
           parameters={},
-          source=unit_type,
+          source="unit",
       )
 
     # Parse unit_fortify format: unit_fortify_warrior(101)
@@ -464,7 +467,7 @@ class FreeCivActionConverter:
           actor_id=int(unit_id),
           target={},
           parameters={},
-          source=unit_type,
+          source="unit",
       )
 
     # Parse city_production format: city_production_rome(301)_target(warriors)
@@ -478,7 +481,47 @@ class FreeCivActionConverter:
           actor_id=int(city_id),
           target={"value": target_value},
           parameters={},
-          source=city_name,
+          source="city",
+      )
+
+    # Parse unit_explore format: unit_explore_warrior(101)
+    explore_match = re.match(r"unit_explore_([^(]+)\((\d+)\)", action_string)
+    if explore_match:
+      unit_type, unit_id = explore_match.groups()
+      return FreeCivAction(
+          action_type="unit_explore",
+          actor_id=int(unit_id),
+          target={},
+          parameters={},
+          source="unit",
+      )
+
+    # Parse city_build_improvement format: city_build_improvement_rome(301)_target(barracks)
+    improvement_match = re.match(
+        r"city_build_improvement_([^(]+)\((\d+)\)_target\(([^)]+)\)", action_string
+    )
+    if improvement_match:
+      city_name, city_id, improvement = improvement_match.groups()
+      return FreeCivAction(
+          action_type="city_build_improvement",
+          actor_id=int(city_id),
+          target={"value": improvement},
+          parameters={},
+          source="city",
+      )
+
+    # Parse tech_research format: tech_research_player(1)_target(Alphabet)
+    tech_match = re.match(
+        r"tech_research_player\((\d+)\)_target\(([^)]+)\)", action_string
+    )
+    if tech_match:
+      player_id, tech_name = tech_match.groups()
+      return FreeCivAction(
+          action_type="tech_research",
+          actor_id=int(player_id),
+          target={"value": tech_name},
+          parameters={},
+          source="player",
       )
 
     # Generic parsing fallback
