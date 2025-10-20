@@ -456,6 +456,18 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
         if len(text) > self._config.max_input_size:
             return None
 
+        # Valid action types allowlist for security
+        VALID_ACTION_TYPES = {
+            'tech_research',
+            'unit_move',
+            'unit_attack',
+            'unit_fortify',
+            'unit_explore',
+            'city_production',
+            'city_build_improvement',
+            'end_turn',
+        }
+
         try:
             # Pattern to match Python-like attribute assignments
             # Matches: action_type='tech_research' actor_id=1 target={'value': 'Alphabet'}
@@ -473,8 +485,13 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
                 actor_id = int(match.group(2))
                 target_str = match.group(3)
 
-                # Security: Limit target string size
-                if len(target_str) > 500:
+                # Security: Validate action type is in allowlist
+                if action_type not in VALID_ACTION_TYPES:
+                    logging.debug(f"Invalid action type: {action_type}")
+                    return None
+
+                # Security: Limit target string size (reduced from 500 to 200)
+                if len(target_str) > 200:
                     logging.debug("Target string too large, skipping Python repr parse")
                     return None
 
@@ -485,31 +502,53 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
                     logging.debug(f"Failed to parse target dict: {e}")
                     return None
 
+                # Security: Validate target is a dict with expected structure
+                if not isinstance(target, dict):
+                    logging.debug(f"Target is not a dict: {type(target)}")
+                    return None
+
+                # Security: Limit dict size
+                if len(target) > 10:
+                    logging.debug(f"Target dict too large: {len(target)} keys")
+                    return None
+
+                # Security: Validate all values are simple types (str, int, float)
+                for key, value in target.items():
+                    if not isinstance(value, (str, int, float, type(None))):
+                        logging.debug(f"Target contains invalid type: {type(value)}")
+                        return None
+                    # Limit string values
+                    if isinstance(value, str) and len(value) > 100:
+                        logging.debug(f"Target string value too long: {len(value)}")
+                        return None
+
                 # Convert to canonical format based on action type
                 if action_type == "tech_research" and isinstance(target, dict):
                     tech_name = target.get('value', target.get('name', ''))
-                    if tech_name:
+                    if tech_name and isinstance(tech_name, str):
                         return f"tech_research_player({actor_id})_target({tech_name})"
 
                 elif action_type == "city_production" and isinstance(target, dict):
                     production = target.get('value', target.get('name', ''))
-                    if production:
+                    if production and isinstance(production, str):
                         return f"city_production_city({actor_id})_target({production})"
 
                 elif action_type == "unit_move" and isinstance(target, dict):
                     x = target.get('x')
                     y = target.get('y')
-                    if x is not None and y is not None:
+                    if x is not None and y is not None and isinstance(x, int) and isinstance(y, int):
                         return f"unit_move_unit({actor_id})_to({x},{y})"
 
                 elif action_type == "unit_attack" and isinstance(target, dict):
                     target_id = target.get('id', target.get('value'))
-                    if target_id is not None:
+                    if target_id is not None and isinstance(target_id, int):
                         return f"unit_attack_unit({actor_id})_target({target_id})"
 
-                # Generic fallback for other action types
+                # Generic fallback for other action types (with strict validation)
                 if isinstance(target, dict) and 'value' in target:
-                    return f"{action_type}_player({actor_id})_target({target['value']})"
+                    value = target['value']
+                    if isinstance(value, (str, int)):
+                        return f"{action_type}_player({actor_id})_target({value})"
 
         except Exception as e:
             if self._config.enable_debug_logging:

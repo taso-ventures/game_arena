@@ -376,9 +376,11 @@ class FreeCivLLMAgent(
     # Build context-aware prompt
     prompt = self._build_context_aware_prompt(observation, state, legal_actions)
 
-    # Generate response using model (synchronous method)
+    # Generate response using model (run in thread pool to avoid blocking event loop)
     self._num_model_calls += 1
-    response = self.model.generate_with_text_input(prompt)
+    response = await asyncio.to_thread(
+        self.model.generate_with_text_input, prompt
+    )
 
     # Parse response to FreeCivAction
     selected_action = self._parse_llm_response(
@@ -388,7 +390,7 @@ class FreeCivLLMAgent(
     # Validate action is legal with detailed logging
     if selected_action not in legal_actions:
       # Log what went wrong for debugging
-      absl_logging.warning(
+      absl_logging.info(
           "LLM generated illegal action: %s (type=%s, actor=%s, target=%s)",
           self.action_converter.action_to_string(selected_action),
           selected_action.action_type,
@@ -513,9 +515,19 @@ class FreeCivLLMAgent(
       # Convert back to FreeCivAction
       return self.action_converter.string_to_action(parsed_action_string)
     else:
-      # Fallback to first legal action
-      absl_logging.warning("Failed to parse LLM response, using fallback")
+      # Fallback strategy: prefer safe actions over potentially destructive ones
+      absl_logging.info("Failed to parse LLM response, using fallback action")
       absl_logging.debug("LLM response: %s", response_text[:500])
+
+      # Try to find a safe default action (tech research, explore, fortify)
+      safe_action_types = ['tech_research', 'unit_explore', 'unit_fortify']
+      for action in legal_actions:
+        if action.action_type in safe_action_types:
+          absl_logging.debug(f"Selected safe fallback action: {action.action_type}")
+          return action
+
+      # If no safe action found, return first legal action
+      absl_logging.debug("No safe action found, using first legal action")
       return legal_actions[0]
 
   def _is_valid_canonical_format(self, action_string: str) -> bool:

@@ -113,6 +113,11 @@ DEFAULT_RATE_LIMIT_BURST_SIZE = 10  # Allow burst of 10 requests
 DEFAULT_EXPONENTIAL_BACKOFF_BASE = 1.5  # Base for exponential backoff
 DEFAULT_MAX_BACKOFF_DELAY = 30.0  # Maximum backoff delay in seconds
 
+# Message size rate limiting - protect against bandwidth DoS
+MAX_MESSAGES_PER_SECOND = 10  # Maximum messages per second per connection
+MAX_BYTES_PER_MINUTE = 50_000_000  # 50MB per minute per connection
+MESSAGE_RATE_WINDOW_SECONDS = 60.0  # Rolling window for message size tracking
+
 # Cache key validation pattern
 CACHE_KEY_PATTERN = re.compile(r'^[a-zA-Z0-9_.-]+$')
 
@@ -131,6 +136,14 @@ DEFAULT_STATE_CACHE_TTL = 5.0
 DEFAULT_MAX_CACHE_ENTRIES = 10  # LRU cache size - consider adaptive sizing
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 3
 BACKGROUND_TASK_SHUTDOWN_TIMEOUT = 5.0
+
+# Retry configuration for state queries and actions
+MAX_STATE_QUERY_RETRIES = 3  # Maximum retries for E122 errors
+DEFAULT_RETRY_DELAY_SECONDS = 2.0  # Delay between retries
+GAME_START_WAIT_SECONDS = 12  # Wait for nation selection + async registration + game start
+
+# Parser security constants
+MAX_TARGET_STRING_LENGTH = 200  # Maximum length for target strings in Python repr parsing
 
 # Cache size constants - consider making adaptive based on memory
 DEFAULT_ACTION_CACHE_SIZE = 1000
@@ -496,6 +509,140 @@ class RateLimiter:
     return stats
 
 
+class MessageSizeRateLimiter:
+  """Rate limiter for message size to prevent bandwidth DoS attacks.
+
+  Tracks both message count and total bytes transferred in rolling windows.
+  """
+
+  def __init__(
+      self,
+      max_messages_per_second: int = MAX_MESSAGES_PER_SECOND,
+      max_bytes_per_minute: int = MAX_BYTES_PER_MINUTE,
+      window_seconds: float = MESSAGE_RATE_WINDOW_SECONDS,
+  ):
+    """Initialize message size rate limiter.
+
+    Args:
+        max_messages_per_second: Maximum messages per second
+        max_bytes_per_minute: Maximum bytes per minute
+        window_seconds: Rolling window size in seconds
+    """
+    self.max_messages_per_second = max_messages_per_second
+    self.max_bytes_per_minute = max_bytes_per_minute
+    self.window_seconds = window_seconds
+
+    # Per-connection tracking: {connection_id: {"messages": deque, "bytes": deque}}
+    # deque contains tuples of (timestamp, size_bytes)
+    self.connection_tracking: Dict[str, Dict[str, Any]] = {}
+
+  def check_and_record(
+      self,
+      connection_id: str,
+      message_size_bytes: int,
+  ) -> bool:
+    """Check rate limits and record message if allowed.
+
+    Args:
+        connection_id: Unique connection identifier
+        message_size_bytes: Size of message in bytes
+
+    Returns:
+        True if message is allowed, False if rate limit exceeded
+    """
+    from collections import deque
+
+    current_time = time.time()
+
+    # Initialize tracking for new connections
+    if connection_id not in self.connection_tracking:
+      self.connection_tracking[connection_id] = {
+          "messages": deque(),
+          "bytes": deque(),
+      }
+
+    tracking = self.connection_tracking[connection_id]
+
+    # Clean old entries outside the rolling windows
+    # Message count window: 1 second
+    message_window_start = current_time - 1.0
+    while tracking["messages"] and tracking["messages"][0][0] < message_window_start:
+      tracking["messages"].popleft()
+
+    # Bytes count window: window_seconds (default 60)
+    bytes_window_start = current_time - self.window_seconds
+    while tracking["bytes"] and tracking["bytes"][0][0] < bytes_window_start:
+      tracking["bytes"].popleft()
+
+    # Check message rate limit (messages per second)
+    if len(tracking["messages"]) >= self.max_messages_per_second:
+      logger.warning(
+          "Message rate limit exceeded for %s: %d messages in 1 second (max %d)",
+          connection_id,
+          len(tracking["messages"]),
+          self.max_messages_per_second,
+      )
+      return False
+
+    # Check byte rate limit (bytes per minute)
+    total_bytes = sum(size for _, size in tracking["bytes"])
+    if total_bytes + message_size_bytes > self.max_bytes_per_minute:
+      logger.warning(
+          "Bandwidth rate limit exceeded for %s: %d + %d bytes in %d seconds (max %d)",
+          connection_id,
+          total_bytes,
+          message_size_bytes,
+          self.window_seconds,
+          self.max_bytes_per_minute,
+      )
+      return False
+
+    # Record message
+    tracking["messages"].append((current_time, message_size_bytes))
+    tracking["bytes"].append((current_time, message_size_bytes))
+
+    return True
+
+  def get_stats(self, connection_id: str) -> Dict[str, Any]:
+    """Get rate limiter statistics for a connection.
+
+    Args:
+        connection_id: Connection identifier
+
+    Returns:
+        Dictionary with current usage statistics
+    """
+    if connection_id not in self.connection_tracking:
+      return {
+          "messages_last_second": 0,
+          "bytes_last_minute": 0,
+          "message_limit": self.max_messages_per_second,
+          "byte_limit": self.max_bytes_per_minute,
+      }
+
+    tracking = self.connection_tracking[connection_id]
+    current_time = time.time()
+
+    # Count recent messages
+    message_count = sum(
+        1 for ts, _ in tracking["messages"] if ts > current_time - 1.0
+    )
+
+    # Count recent bytes
+    byte_count = sum(
+        size for ts, size in tracking["bytes"] if ts > current_time - self.window_seconds
+    )
+
+    return {
+        "messages_last_second": message_count,
+        "bytes_last_minute": byte_count,
+        "message_limit": self.max_messages_per_second,
+        "byte_limit": self.max_bytes_per_minute,
+        "message_utilization": message_count / self.max_messages_per_second,
+        "byte_utilization": byte_count / self.max_bytes_per_minute,
+    }
+
+
 class CircuitBreaker:
   """Circuit breaker for API failure handling."""
 
@@ -671,6 +818,13 @@ class FreeCivProxyClient:
           success_threshold=3,
       )
 
+      # Message size rate limiter for bandwidth DoS protection
+      self.message_size_limiter = MessageSizeRateLimiter(
+          max_messages_per_second=MAX_MESSAGES_PER_SECOND,
+          max_bytes_per_minute=MAX_BYTES_PER_MINUTE,
+          window_seconds=MESSAGE_RATE_WINDOW_SECONDS,
+      )
+
       # Rate limiter for API requests
       self.rate_limiter = RateLimiter(
           requests_per_minute=DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE,
@@ -840,12 +994,22 @@ class FreeCivProxyClient:
           }
 
           try:
-              logger.warning(f"🔍 SENDING STATE_QUERY (attempt {attempt + 1}/{max_retries}): {json.dumps(state_request)}")
-              await self.connection_manager.send_message(json.dumps(state_request))
+              message_str = json.dumps(state_request)
+              message_size = len(message_str.encode('utf-8'))
+
+              # Check message size rate limit before sending
+              if not self.message_size_limiter.check_and_record(self.agent_id, message_size):
+                  raise RuntimeError(
+                      f"Message rate limit exceeded. "
+                      f"Stats: {self.message_size_limiter.get_stats(self.agent_id)}"
+                  )
+
+              logger.debug(f"Sending STATE_QUERY (attempt {attempt + 1}/{max_retries})")
+              await self.connection_manager.send_message(message_str)
 
               # Wait for either state_update or error response
               response = await self._wait_for_response(["state_update", "error"])
-              logger.warning(f"🔍 RECEIVED response type: {response.get('type') if response else 'None'}")
+              logger.debug(f"Received response type: {response.get('type') if response else 'None'}")
 
               # Check if we received an error
               if response and response.get("type") == "error":
@@ -870,7 +1034,7 @@ class FreeCivProxyClient:
 
               # Check if we received a valid state_update
               if response and response.get("type") == "state_update":
-                  logger.warning(f"✓ STATE_UPDATE received: {json.dumps(response)[:300]}")
+                  logger.debug("STATE_UPDATE received successfully")
                   # Record success with circuit breaker
                   self.circuit_breaker.record_success()
 
@@ -946,7 +1110,17 @@ class FreeCivProxyClient:
 
       # Send directly for now (message queue can be used for batching later)
       try:
-          await self.connection_manager.send_message(json.dumps(action_request))
+          message_str = json.dumps(action_request)
+          message_size = len(message_str.encode('utf-8'))
+
+          # Check message size rate limit before sending
+          if not self.message_size_limiter.check_and_record(self.agent_id, message_size):
+              raise RuntimeError(
+                  f"Message rate limit exceeded. "
+                  f"Stats: {self.message_size_limiter.get_stats(self.agent_id)}"
+              )
+
+          await self.connection_manager.send_message(message_str)
           response = await self._wait_for_response(["action_result", "action_accepted", "action_rejected"])
 
           if response:
