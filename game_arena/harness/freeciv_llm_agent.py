@@ -319,8 +319,19 @@ class FreeCivLLMAgent(
     for key in ["playerID", "player_id", "current_player", "agent_id"]:
       if key in observation:
         player_id = observation[key]
-        if isinstance(player_id, int) and player_id >= 0:
-          return player_id
+
+        # Validate player ID type and value
+        if not isinstance(player_id, int):
+          raise ValueError(
+              f"Player ID must be an integer, got {type(player_id).__name__} "
+              f"for key '{key}': {player_id}"
+          )
+        if player_id < 0:
+          raise ValueError(
+              f"Player ID must be non-negative, got {player_id} for key '{key}'"
+          )
+
+        return player_id
 
     # Try to extract from state information
     if "state" in observation:
@@ -329,8 +340,19 @@ class FreeCivLLMAgent(
         for key in ["current_player", "active_player", "turn_player"]:
           if key in state_data:
             player_id = state_data[key]
-            if isinstance(player_id, int) and player_id >= 0:
-              return player_id
+
+            # Validate player ID from nested state
+            if not isinstance(player_id, int):
+              raise ValueError(
+                  f"Player ID in state.{key} must be an integer, "
+                  f"got {type(player_id).__name__}: {player_id}"
+              )
+            if player_id < 0:
+              raise ValueError(
+                  f"Player ID in state.{key} must be non-negative, got {player_id}"
+              )
+
+            return player_id
 
     # Check if stored from previous calls
     if hasattr(self, '_cached_player_id'):
@@ -340,15 +362,16 @@ class FreeCivLLMAgent(
       )
       return self._cached_player_id
 
-    # Last resort: try to infer from available data or use default
-    absl_logging.warning(
-        "Could not extract player ID from observation, defaulting to 1. "
-        "Observation keys: %s", list(observation.keys())
+    # If we reach here, player ID could not be determined - RAISE ERROR
+    # (fixing PR feedback bug: was silently defaulting to 1, causing multi-agent bugs)
+    observation_keys = list(observation.keys())
+    raise ValueError(
+        f"Cannot determine player ID from observation. "
+        f"Expected one of: 'playerID', 'player_id', 'current_player', 'agent_id', "
+        f"or nested in 'state' object. "
+        f"Available observation keys: {observation_keys}. "
+        f"Please ensure the observation includes a valid player ID field."
     )
-
-    # Cache the default for consistency
-    self._cached_player_id = 1
-    return 1
 
   async def _generate_action_with_llm(
       self,

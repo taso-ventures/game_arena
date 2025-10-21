@@ -804,6 +804,7 @@ class FreeCivProxyClient:
       # State management
       self.player_id: Optional[int] = None
       self.state_cache: OrderedDict[str, Any] = OrderedDict()
+      self._state_cache_lock: asyncio.Lock = asyncio.Lock()  # Protect concurrent cache access
       self.last_state_update = 0
       self.last_error: Optional[Dict[str, Any]] = None  # Store last error for retry logic
       self.last_action_error: Optional[Dict[str, Any]] = None  # Store last action rejection for debugging
@@ -933,7 +934,10 @@ class FreeCivProxyClient:
 
       # Clear state
       self.player_id = None
-      self.state_cache.clear()
+
+      # Protect cache clear with async lock
+      async with self._state_cache_lock:
+          self.state_cache.clear()
 
   async def wait_for_game_ready(self, timeout: float = 30.0) -> bool:
       """Wait for game_ready signal from server with timeout.
@@ -1003,19 +1007,21 @@ class FreeCivProxyClient:
           raise ValueError(f"Invalid format_type: {format_type}")
       current_time = time.time()
 
-      if (
-          cache_key in self.state_cache
-          and current_time - self.state_cache[cache_key].get("_timestamp", 0)
-          < self.state_cache_ttl
-      ):
-          # Move to end (most recently used) for LRU
-          cached_item = self.state_cache.pop(cache_key)
-          self.state_cache[cache_key] = cached_item
-          return {
-              k: v
-              for k, v in cached_item.items()
-              if k != "_timestamp"
-          }
+      # Protect cache read with async lock to prevent race conditions
+      async with self._state_cache_lock:
+          if (
+              cache_key in self.state_cache
+              and current_time - self.state_cache[cache_key].get("_timestamp", 0)
+              < self.state_cache_ttl
+          ):
+              # Move to end (most recently used) for LRU
+              cached_item = self.state_cache.pop(cache_key)
+              self.state_cache[cache_key] = cached_item
+              return {
+                  k: v
+                  for k, v in cached_item.items()
+                  if k != "_timestamp"
+              }
 
       # Request fresh state with retry logic for E122 errors
       for attempt in range(max_retries):
@@ -1070,14 +1076,17 @@ class FreeCivProxyClient:
                   # Record success with circuit breaker
                   self.circuit_breaker.record_success()
 
-                  # Evict old cache entries if limit exceeded using LRU
-                  if len(self.state_cache) >= self.max_cache_entries:
-                      # Remove least recently used entry (first item in OrderedDict)
-                      oldest_key, _ = self.state_cache.popitem(last=False)
-                      logger.debug(f"Evicted LRU cache entry: {oldest_key}")
+                  # Protect cache write and eviction with async lock
+                  async with self._state_cache_lock:
+                      # Evict old cache entries if limit exceeded using LRU
+                      if len(self.state_cache) >= self.max_cache_entries:
+                          # Remove least recently used entry (first item in OrderedDict)
+                          oldest_key, _ = self.state_cache.popitem(last=False)
+                          logger.debug(f"Evicted LRU cache entry: {oldest_key}")
 
-                  # Cache the response with timestamp
-                  self.state_cache[cache_key] = {**response, "_timestamp": current_time}
+                      # Cache the response with timestamp
+                      self.state_cache[cache_key] = {**response, "_timestamp": current_time}
+
                   self.last_state_update = current_time
                   return response
 
