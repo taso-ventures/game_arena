@@ -161,6 +161,10 @@ class FreeCivLLMAgent(
     self._num_model_calls = 0
     self._total_response_time = 0.0
 
+    # Error telemetry (PR feedback fix: capture error context for debugging)
+    self._error_telemetry: Optional[Dict[str, Any]] = None
+    self._error_history: List[Dict[str, Any]] = []
+
     absl_logging.info(
         "FreeCivLLMAgent initialized: model=%s, strategy=%s, rethinking=%s",
         model.model_name,
@@ -208,8 +212,29 @@ class FreeCivLLMAgent(
 
     except Exception as e:
       execution_time = time.time() - start_time
+
+      # Capture structured error telemetry (PR feedback fix)
+      import traceback
+      self._error_telemetry = {
+          "error_type": type(e).__name__,
+          "error_message": str(e),
+          "stack_trace": traceback.format_exc(),
+          "observation_context": {
+              "turn": observation.get("turn", None),
+              "player_id": observation.get("playerID", observation.get("player_id", None)),
+              "num_legal_actions": len(observation.get("legalActions", [])),
+              "phase": observation.get("phase", None),
+              "observation_keys": list(observation.keys()),
+          },
+          "timestamp": time.time(),
+          "execution_time": execution_time,
+      }
+
       absl_logging.error(
-          "Action generation failed after %.2fs: %s", execution_time, str(e)
+          "Action generation failed after %.2fs: %s [%s]",
+          execution_time,
+          str(e),
+          type(e).__name__
       )
 
       if self.fallback_to_random:
@@ -217,14 +242,46 @@ class FreeCivLLMAgent(
         legal_actions = observation.get("legalActions", [])
         if legal_actions:
           fallback_action = self._rng.choice(legal_actions)
+
+          # Record fallback action details in telemetry
+          self._error_telemetry["fallback_action"] = {
+              "action": fallback_action,
+              "reason": "random_from_legal_actions",
+              "legal_actions": legal_actions,
+              "rethinking_attempted": self.sampler is not None,
+          }
+
           absl_logging.warning(
-              "Falling back to random action: %d", fallback_action
+              "Falling back to random action: %d (reason: %s)",
+              fallback_action,
+              "random_from_legal_actions"
           )
+
+          # Add to error history for trend analysis
+          self._error_history.append(self._error_telemetry.copy())
+
           return {"submission": fallback_action}
         else:
+          # No legal actions available - record and re-raise
+          self._error_telemetry["fallback_action"] = {
+              "action": None,
+              "reason": "no_legal_actions_available",
+              "legal_actions": [],
+              "rethinking_attempted": False,
+          }
+          self._error_history.append(self._error_telemetry.copy())
+
           absl_logging.error("No legal actions available for fallback")
           raise e
       else:
+        # Fallback disabled - record and re-raise
+        self._error_telemetry["fallback_action"] = {
+            "action": None,
+            "reason": "no_fallback_configured",
+            "legal_actions": observation.get("legalActions", []),
+            "rethinking_attempted": False,
+        }
+        self._error_history.append(self._error_telemetry.copy())
         raise e
 
   async def _get_action_async(self, observation: Mapping[str, Any]) -> int:
@@ -702,3 +759,50 @@ class FreeCivLLMAgent(
         "memory_size": len(self.memory.history),
         "cache_stats": self.memory.get_cache_statistics(),
     }
+
+  def get_error_telemetry(self) -> Optional[Dict[str, Any]]:
+    """Get most recent error telemetry for monitoring.
+
+    Returns:
+      Dictionary with structured error information, or None if no errors
+
+    Example:
+      {
+        "error_type": "ValueError",
+        "error_message": "Invalid game state",
+        "stack_trace": "Traceback (most recent call last)...",
+        "observation_context": {
+          "turn": 5,
+          "player_id": 1,
+          "num_legal_actions": 10,
+          "phase": "move"
+        },
+        "fallback_action": {
+          "action": 42,
+          "reason": "random_from_legal_actions",
+          "legal_actions": [40, 41, 42, 43],
+          "rethinking_attempted": False
+        },
+        "timestamp": 1234567890.123,
+        "execution_time": 0.52
+      }
+    """
+    return self._error_telemetry
+
+  def get_error_history(self) -> List[Dict[str, Any]]:
+    """Get full error history for trend analysis.
+
+    Returns:
+      List of error telemetry dictionaries, ordered chronologically
+
+    This is useful for monitoring systems to detect patterns like:
+    - Increasing error rates
+    - Specific error types that repeat
+    - Correlation between errors and game state
+    """
+    return self._error_history
+
+  def clear_error_telemetry(self) -> None:
+    """Clear error telemetry (useful for testing or periodic cleanup)."""
+    self._error_telemetry = None
+    self._error_history = []
