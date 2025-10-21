@@ -190,21 +190,100 @@ async def run_freeciv_game():
             leader_name=_PLAYER2_LEADER.value
         )
 
+        # Track timing for diagnostics
+        auth_start_time = time.time()
+
         # Connect Player 1
-        print(colored("Connecting Player 1 to LLM Gateway...", "blue"))
+        print(colored(f"[{time.time():.1f}] Connecting Player 1 to LLM Gateway...", "blue"))
         await proxy1.connect()
-        print(colored("✓ Player 1 connected", "green"))
+        player1_auth_time = time.time() - auth_start_time
+        print(colored(f"[{time.time():.1f}] ✓ Player 1 connected (took {player1_auth_time:.1f}s)", "green"))
 
         # Connect Player 2
-        print(colored("Connecting Player 2 to LLM Gateway...", "blue"))
+        player2_start = time.time()
+        print(colored(f"[{time.time():.1f}] Connecting Player 2 to LLM Gateway...", "blue"))
         await proxy2.connect()
-        print(colored("✓ Player 2 connected", "green"))
+        player2_auth_time = time.time() - player2_start
+        print(colored(f"[{time.time():.1f}] ✓ Player 2 connected (took {player2_auth_time:.1f}s)", "green"))
 
-        # Wait for game to start (triggered when 2nd player connects)
-        # CRITICAL FIX: Reduced from 35s to 12s to prevent civserver timeout (--quitidle 20)
-        # Timing: 2-3s nation selection + 2-3s player_id assignment + 7s buffer = 12s total
-        print(colored("⏳ Waiting for game to start with both players (12s)...", "yellow"))
-        await asyncio.sleep(12)  # Wait for nation selection + async registration + game start
+        # Wait for game_ready signal from server (event-driven with timeout)
+        # FreeCiv3D will send game_ready when:
+        # - All players have connected and authenticated
+        # - Nations have been assigned
+        # - Units and cities have been created
+        # - Game is ready for actions
+        print(colored(f"[{time.time():.1f}] ⏳ Waiting for game_ready signal from server (max 45s)...", "yellow"))
+
+        # Increased timeout to 45s for slow Docker environments
+        max_wait = 45.0
+        try:
+            await asyncio.wait_for(proxy1.game_ready_event.wait(), timeout=max_wait)
+            game_ready_time = time.time() - auth_start_time
+            print(colored(f"[{time.time():.1f}] ✅ Game ready signal received! (total time: {game_ready_time:.1f}s)", "green"))
+        except asyncio.TimeoutError:
+            timeout_time = time.time() - auth_start_time
+            print(colored(f"[{time.time():.1f}] ⚠️ Timeout after {timeout_time:.1f}s waiting for game_ready", "yellow"))
+
+            # CRITICAL: Check if event was set during race condition
+            if proxy1.game_ready_event.is_set():
+                print(colored("   ✅ Game ready event WAS set (caught race condition!)", "green"))
+            else:
+                print(colored("   ❌ No game_ready signal - game may not be initialized", "yellow"))
+                print(colored("   Proceeding with state validation...", "yellow"))
+
+        # Verify game state is properly initialized before starting game loop
+        print(colored("🔍 Verifying game initialization...", "cyan"))
+
+        # Initialize state variables (defined outside try block so they're always available)
+        units1, cities1 = [], []
+
+        try:
+            # Check both proxies for game state
+            state1 = await proxy1.get_state()
+            state2 = await proxy2.get_state()
+
+            # Log player info
+            players1 = state1.get("players", [])
+            units1 = state1.get("units", [])
+            cities1 = state1.get("cities", [])
+
+            print(colored(f"Player 1 state: {len(players1)} players, {len(units1)} units, {len(cities1)} cities", "blue"))
+            print(colored(f"Turn: {state1.get('turn', 'unknown')}, Phase: {state1.get('game', {}).get('phase', 'unknown')}", "blue"))
+
+            # Verify nation assignment
+            if players1:
+                for i, player in enumerate(players1[:2]):  # Check first 2 players
+                    player_nation = player.get("nation", "unassigned")
+                    player_name = player.get("name", f"Player {i+1}")
+                    print(colored(f"  {player_name}: nation={player_nation}", "blue"))
+
+                    if player_nation == "unassigned" or not player_nation:
+                        print(colored(f"    ⚠️ Nation not assigned to {player_name}!", "yellow"))
+
+            # Check game_ready flag
+            if proxy1.game_ready:
+                print(colored("✅ Game ready signal confirmed", "green"))
+            else:
+                print(colored("⚠️ No game_ready signal received yet", "yellow"))
+
+            # If game looks uninitialized, wait longer
+            if not units1 and not cities1:
+                print(colored("⚠️ Game not fully initialized (no units/cities), waiting additional 10s...", "yellow"))
+                await asyncio.sleep(10)
+
+                # Re-check after additional wait
+                state1 = await proxy1.get_state()
+                units1 = state1.get("units", [])
+                cities1 = state1.get("cities", [])
+                print(colored(f"After additional wait: {len(units1)} units, {len(cities1)} cities", "blue"))
+
+                if not units1 and not cities1:
+                    print(colored("❌ WARNING: Game still appears uninitialized! Proceeding anyway...", "yellow"))
+                    print(colored("   This may result in only tech_research actions being available.", "yellow"))
+
+        except Exception as e:
+            print(colored(f"⚠️ Error verifying game state: {e}", "yellow"))
+            print(colored("Proceeding with game anyway...", "yellow"))
 
         # Create LLM models
         print(colored("Creating LLM agents...", "blue"))
@@ -235,20 +314,44 @@ async def run_freeciv_game():
         print(f"  Player 1: {_PLAYER1_MODEL.value.upper()} ({_STRATEGY1.value})")
         print(f"  Player 2: {_PLAYER2_MODEL.value.upper()} ({_STRATEGY2.value})")
 
-        # Display spectator URLs
+        # Display initialization timing summary
+        total_init_time = time.time() - auth_start_time
+        print(colored(f"\n📊 Initialization Timing Summary:", "cyan"))
+        print(colored(f"  Player 1 auth: {player1_auth_time:.1f}s", "blue"))
+        print(colored(f"  Player 2 auth: {player2_auth_time:.1f}s", "blue"))
+        print(colored(f"  Total initialization: {total_init_time:.1f}s", "blue"))
+        if proxy1.game_ready:
+            print(colored(f"  ✅ Game ready signal: RECEIVED", "green"))
+        else:
+            print(colored(f"  ⚠️ Game ready signal: NOT RECEIVED", "yellow"))
+
+        # Display spectator URLs (with game readiness status)
         print(colored("\n" + "=" * 60, "cyan"))
         print(colored("📺 SPECTATOR MODE", "cyan"))
         print(colored("=" * 60, "cyan"))
         print(f"Game ID: {game_id}")
-        print(f"\nLLM Gateway Spectator URL:")
-        spectator_url = f"http://localhost:8080/webclient/spectator.jsp?game_id={game_id}&port=8003"
+
+        # Display game readiness status
+        if units1 and cities1 and proxy1.game_ready:
+            print(colored("✅ Game is fully initialized and ready for viewing", "green"))
+        elif units1 or cities1:
+            print(colored("⚠️ Game partially initialized (spectator may show incomplete state)", "yellow"))
+        else:
+            print(colored("❌ WARNING: Game not initialized yet (spectator may show pre-game lobby)", "yellow"))
+            print(colored("   Wait a few moments and refresh the spectator page", "yellow"))
+
+        # LLM Gateway Spectator URL (uses broadcast system, not direct civserver connection)
+        print(f"\nSpectator URL (LLM Gateway Broadcast - Player 1 View):")
+        spectator_url = f"http://localhost:8080/webclient/spectator.jsp?game_id={game_id}"
         print(colored(f"  {spectator_url}", "green"))
-        print(f"\nDirect FreeCiv Server URLs (if game on port 6000):")
-        print(f"  http://localhost:8080/webclient/spectator.jsp?game_id={game_id}&port=6000")
+        print(f"\n📝 Note: Spectator connects to LLM Gateway (ws://localhost:8003/ws/spectator/{game_id})")
+        print(f"   Receives Player 1's perspective via packet broadcast")
+        civserver_port = proxy1.civserver_port or 6000
+        print(f"   Game running on civserver port {civserver_port}")
         print(f"\n🔧 Debug Commands:")
         print(f"  Check LLM Gateway logs: docker exec fciv-net grep '{game_id}' /docker/llm-gateway/logs/*.log 2>/dev/null")
         print(f"  Check proxy logs: docker exec fciv-net cat /docker/logs/freeciv-proxy-8002.log | grep '{game_id}'")
-        print(f"  WebSocket test: wscat -c ws://localhost:8003/ws/spectator/{game_id}")
+        print(f"  WebSocket test (spectator): wscat -c ws://localhost:8003/ws/spectator/{game_id}")
         print(colored("=" * 60 + "\n", "cyan"))
 
         # Game loop

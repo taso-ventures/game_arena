@@ -1782,10 +1782,35 @@ class FreeCivState(_GameStateBase):
         raw_actions = self._raw_state.get('legal_actions', [])
 
         if not raw_actions:
-            logger.warning(
-                f"No legal_actions in state for player {player_id}. "
-                f"State keys: {list(self._raw_state.keys())}"
+            # Detailed diagnostic logging to understand why no actions are available
+            units_data = self._raw_state.get('units', [])
+            cities_data = self._raw_state.get('cities', [])
+            players_data = self._raw_state.get('players', [])
+            game_data = self._raw_state.get('game', {})
+
+            logger.error(
+                f"No legal_actions in state for player {player_id}!\n"
+                f"State keys: {list(self._raw_state.keys())}\n"
+                f"Units count: {len(units_data)}\n"
+                f"Cities count: {len(cities_data)}\n"
+                f"Players count: {len(players_data)}\n"
+                f"Game phase: {game_data.get('phase', 'unknown')}\n"
+                f"Turn: {self._raw_state.get('turn', 'unknown')}\n"
             )
+
+            # Sample first few items if they exist
+            if units_data:
+                logger.debug(f"Sample units: {units_data[:2]}")
+            if cities_data:
+                logger.debug(f"Sample cities: {cities_data[:2]}")
+
+            # Check if state has minimal required data
+            if not units_data and not cities_data:
+                logger.error(
+                    f"⚠️ CRITICAL: Game state appears uninitialized - no units or cities!\n"
+                    f"This suggests the game hasn't started yet or nation assignment failed."
+                )
+
             return []
 
         # Build ownership lookup for filtering

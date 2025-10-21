@@ -781,6 +781,7 @@ class FreeCivProxyClient:
       self.max_cache_entries = max_cache_entries
       self.nation = nation
       self.leader_name = leader_name or self.agent_id
+      self.civserver_port = None  # Will be set from auth_success response
 
       # Connection management - construct WebSocket URL for LLM Gateway
       ws_url = f"ws://{host}:{port}/ws/agent/{self.agent_id}"
@@ -806,6 +807,8 @@ class FreeCivProxyClient:
       self.last_state_update = 0
       self.last_error: Optional[Dict[str, Any]] = None  # Store last error for retry logic
       self.last_action_error: Optional[Dict[str, Any]] = None  # Store last action rejection for debugging
+      self.game_ready: bool = False  # Flag set when server sends game_ready message
+      self.game_ready_event: asyncio.Event = asyncio.Event()  # Event for async waiting on game initialization
 
       # Background tasks
       self._heartbeat_task: Optional[asyncio.Task] = None
@@ -897,8 +900,9 @@ class FreeCivProxyClient:
               if (auth_data.get("type") == "llm_connect" and
                   (data_section.get("type") == "auth_success" or data_section.get("success") == True)):
                   self.player_id = data_section.get("player_id")
+                  self.civserver_port = data_section.get("civserver_port")  # Store civserver port for spectator URLs
                   logger.info(
-                      f"Successfully authenticated as player {self.player_id}"
+                      f"Successfully authenticated as player {self.player_id} on civserver port {self.civserver_port}"
                   )
 
                   # Server now sends only ONE auth_success message with player_id already assigned
@@ -930,6 +934,34 @@ class FreeCivProxyClient:
       # Clear state
       self.player_id = None
       self.state_cache.clear()
+
+  async def wait_for_game_ready(self, timeout: float = 30.0) -> bool:
+      """Wait for game_ready signal from server with timeout.
+
+      This method blocks until the server broadcasts the game_ready message,
+      indicating that the game is fully initialized with units, cities, and
+      nations assigned.
+
+      Args:
+          timeout: Maximum time to wait in seconds (default 30s)
+
+      Returns:
+          True if game_ready received, False if timeout
+
+      Example:
+          if await proxy.wait_for_game_ready(timeout=20.0):
+              print("Game ready!")
+              state = await proxy.get_state()
+          else:
+              print("Timeout waiting for game to start")
+      """
+      try:
+          await asyncio.wait_for(self.game_ready_event.wait(), timeout=timeout)
+          logger.info(f"✅ Game ready signal received within {timeout}s")
+          return True
+      except asyncio.TimeoutError:
+          logger.warning(f"⚠️ Timeout waiting for game_ready signal after {timeout}s")
+          return False
 
   async def get_state(
       self,
@@ -1327,6 +1359,14 @@ class FreeCivProxyClient:
                   self.connection_manager.receive_message(), timeout=1.0
               )
               if response:
+                  # Skip non-JSON messages (heartbeats, status updates, etc.)
+                  # These are plain text messages that don't start with '{'
+                  response_stripped = response.strip()
+                  if not response_stripped or not response_stripped.startswith('{'):
+                      # Silently skip non-JSON messages (common for server heartbeats)
+                      logger.debug(f"Skipping non-JSON message: {response_stripped[:50]}")
+                      continue
+
                   try:
                       data = safe_json_loads(response)
                       # Check if message type matches any expected type
@@ -1336,7 +1376,9 @@ class FreeCivProxyClient:
                           # Handle other message types
                           await self.message_handler.handle_message(data)
                   except (ValueError, json.JSONDecodeError) as e:
-                      logger.warning(f"Invalid JSON response: {e}")
+                      # Only warn for messages that looked like JSON but failed to parse
+                      logger.warning(f"Invalid JSON response (starts with '{{' but parse failed): {e}")
+                      logger.debug(f"Problematic message: {response[:200]}")
                       continue
           except asyncio.TimeoutError:
               continue
@@ -1582,7 +1624,9 @@ class MessageHandler:
           await self.handle_error(message)
       elif msg_type == "pong":
           await self.handle_pong(message)
-      elif msg_type in ["welcome", "llm_connect", "game_ready"]:
+      elif msg_type == "game_ready":
+          await self.handle_game_ready(message)
+      elif msg_type in ["welcome", "llm_connect"]:
           # Informational messages from server - log at debug level
           logger.debug(f"Server info message: {msg_type}")
       else:
@@ -1710,6 +1754,27 @@ class MessageHandler:
           message: Pong message
       """
       logger.debug("Received pong")
+
+  async def handle_game_ready(self, message: Dict[str, Any]) -> None:
+      """Handle game_ready message from server.
+
+      This message is sent when the FreeCiv server has fully initialized
+      the game with nations assigned, units created, and gameplay ready to begin.
+
+      Args:
+          message: game_ready message from server
+      """
+      # Extract game_id - handle both nested and flat message structures
+      game_id = message.get("game_id") or message.get("data", {}).get("game_id", "unknown")
+
+      logger.info(f"🎮 Game ready signal received for game {game_id}")
+
+      # Set flag and event on client to indicate game is ready
+      if self.client:
+          self.client.game_ready = True
+          self.client.game_ready_event.set()  # Wake any coroutines waiting on this event
+          logger.info("✅ Game fully initialized - nations assigned, units created, ready to play")
+          logger.info(f"   Game ready event set at timestamp {time.time():.1f}")
 
   async def handle_error(self, message: Dict[str, Any]) -> None:
       """Handle error messages from server.
