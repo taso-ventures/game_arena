@@ -323,7 +323,16 @@ class FreeCivLLMAgent(
   async def _extract_game_state(
       self, observation: Mapping[str, Any]
   ) -> FreeCivState:
-    """Extract FreeCivState from observation.
+    """Extract FreeCivState from observation (stub implementation).
+
+    This is a lightweight stub that wraps the observation dict for compatibility
+    with the OpenSpiel/tournament framework where no proxy_client is available.
+
+    For production FreeCiv3D gameplay with live WebSocket state synchronization,
+    use get_action_async() instead, which calls state_synchronizer.sync_state()
+    to fetch real-time game state from the FreeCiv3D server via proxy_client.
+
+    See: get_action_async() at line ~684 for the full implementation.
 
     Args:
       observation: Game observation containing state data
@@ -331,10 +340,8 @@ class FreeCivLLMAgent(
     Returns:
       FreeCivState object for current game state
     """
-    # For now, create state directly from observation
-    # In full implementation, this would use state_synchronizer
-    # with WebSocket communication to FreeCiv3D server
-
+    # Stub implementation: wraps observation dict directly
+    # Production code uses state_synchronizer.sync_state() for live state
     state_data = {
         "turn": observation.get("turn", 1),
         "phase": observation.get("phase", "move"),
