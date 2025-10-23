@@ -22,7 +22,7 @@ import os
 import sys
 import time
 import uuid
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import requests
 from absl import app, flags
@@ -100,6 +100,11 @@ _PLAYER2_LEADER = flags.DEFINE_string(
     "player2_leader", "AI Player 2", "Leader name for Player 2"
 )
 
+# Game configuration constants for FreeCiv simultaneous turn model
+MAX_ACTIONS_PER_TURN = 20  # Maximum actions per player per turn (safety limit)
+TURN_TIMEOUT_SECONDS = 120  # Maximum time per game turn (both players)
+ACTION_TIMEOUT_SECONDS = 60  # Maximum time per individual action (increased from 30s for LLM latency)
+
 
 def check_freeciv_server(host: str, port: int) -> bool:
     """Check if FreeCiv3D server is running."""
@@ -135,6 +140,184 @@ def create_model(model_type: str, api_keys: dict):
         )
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
+
+
+async def execute_player_turn(
+    player_num: int,
+    agent,  # FreeCivLLMAgent
+    proxy,  # FreeCivProxyClient
+    game_turn: int,
+    model_name: str,
+    max_actions: int = MAX_ACTIONS_PER_TURN,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """Execute one player's complete turn with multiple actions.
+
+    FreeCiv uses simultaneous turns where both players act during the same game turn.
+    Each player submits multiple actions (move units, research tech, build cities, etc.)
+    and must call end_turn when done. The civserver only advances the turn when ALL
+    players have ended their turn.
+
+    Args:
+        player_num: Player number (1 or 2)
+        agent: FreeCivLLMAgent instance
+        proxy: FreeCivProxyClient instance
+        game_turn: Current game turn number
+        model_name: Model name for logging
+        max_actions: Maximum actions per turn (safety limit)
+        verbose: Whether to print detailed logs
+
+    Returns:
+        Dictionary with turn results:
+            - player: Player number
+            - actions: List of actions taken
+            - ended_turn: Whether end_turn was called
+            - action_count: Number of actions taken
+            - error: Error message if any
+    """
+    actions_taken = []
+    error = None
+
+    try:
+        if verbose:
+            print(colored(f"  Player {player_num} ({model_name.upper()}) starting turn...", "blue"))
+
+        for action_count in range(max_actions):
+            try:
+                # Get current game state
+                state = await asyncio.wait_for(
+                    proxy.get_state(),
+                    timeout=ACTION_TIMEOUT_SECONDS
+                )
+
+                # Throttle delay to avoid E101 rate limiting from FreeCiv3D proxy
+                # The proxy enforces rate limits on message frequency
+                await asyncio.sleep(0.3)
+
+                # Check if turn advanced externally (game moved on without us)
+                current_turn = state.get('turn', game_turn)
+                if current_turn > game_turn:
+                    if verbose:
+                        print(colored(
+                            f"  Player {player_num}: Turn advanced to {current_turn} (server moved on)",
+                            "yellow"
+                        ))
+                    break
+
+                # Calculate action context for agent decision-making
+                actions_taken_count = len(actions_taken)
+                actions_remaining = max_actions - actions_taken_count - 1  # -1 for current action
+
+                action_context = {
+                    'actions_taken': max(0, actions_taken_count),  # Prevent negative
+                    'actions_remaining': max(0, actions_remaining),
+                    'max_actions': max_actions,
+                    'should_consider_end_turn': actions_remaining <= 3 and actions_remaining > 0  # Warn when <=3 actions left
+                }
+
+                # Get action from agent WITH context about turn progress
+                action = await asyncio.wait_for(
+                    agent.get_action_async(state, proxy, action_context=action_context),
+                    timeout=ACTION_TIMEOUT_SECONDS
+                )
+
+                if not action:
+                    if verbose:
+                        print(colored(f"  Player {player_num}: No action available", "yellow"))
+                    break
+
+                # Send action to server
+                result = await asyncio.wait_for(
+                    proxy.send_action(action),
+                    timeout=ACTION_TIMEOUT_SECONDS
+                )
+
+                # Record action
+                action_type = action.action_type if hasattr(action, 'action_type') else 'unknown'
+                actions_taken.append({
+                    'action': action,
+                    'action_type': action_type,
+                    'result': result,
+                    'action_number': action_count + 1,
+                })
+
+                # Log action
+                if verbose:
+                    success_mark = "✓" if result.get("success") else "✗"
+                    print(colored(
+                        f"    {success_mark} Action {action_count + 1}: {action_type}",
+                        "green" if result.get("success") else "red"
+                    ))
+
+                # Check if this was end_turn
+                if action_type == 'end_turn':
+                    if verbose:
+                        print(colored(
+                            f"  Player {player_num} ended turn after {len(actions_taken)} actions",
+                            "green"
+                        ))
+                    break
+
+            except asyncio.TimeoutError:
+                error = f"Action {action_count + 1} timed out"
+                if verbose:
+                    print(colored(f"  Player {player_num}: {error}", "red"))
+                break
+            except Exception as e:
+                error = f"Action {action_count + 1} failed: {e}"
+
+                # Check for game server termination errors
+                error_str = str(e)
+                is_server_terminated = (
+                    "E123" in error_str or  # Connection to game server lost
+                    "UNKNOWN" in error_str or  # Unknown server error
+                    "E140" in error_str  # Failed to connect to game server
+                )
+
+                if is_server_terminated:
+                    if verbose:
+                        print(colored(
+                            f"🛑 Player {player_num}: Game server terminated - {error}",
+                            "red"
+                        ))
+                    # Signal server termination by setting special error marker
+                    error = f"SERVER_TERMINATED: {error}"
+                else:
+                    if verbose:
+                        print(colored(f"  Player {player_num}: {error}", "red"))
+
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
+                break
+
+        # Check if we hit max actions without ending turn
+        if len(actions_taken) >= max_actions:
+            last_action_type = actions_taken[-1]['action_type'] if actions_taken else None
+            if last_action_type != 'end_turn':
+                if verbose:
+                    print(colored(
+                        f"  ⚠️ Player {player_num} hit max actions ({max_actions}) without calling end_turn",
+                        "yellow"
+                    ))
+
+    except Exception as e:
+        error = f"Turn execution failed: {e}"
+        if verbose:
+            print(colored(f"  Player {player_num}: {error}", "red"))
+            import traceback
+            traceback.print_exc()
+
+    return {
+        'player': player_num,
+        'actions': actions_taken,
+        'ended_turn': (
+            actions_taken[-1]['action_type'] == 'end_turn'
+            if actions_taken else False
+        ),
+        'action_count': len(actions_taken),
+        'error': error,
+    }
 
 
 async def run_freeciv_game():
@@ -198,6 +381,17 @@ async def run_freeciv_game():
         await proxy1.connect()
         player1_auth_time = time.time() - auth_start_time
         print(colored(f"[{time.time():.1f}] ✓ Player 1 connected (took {player1_auth_time:.1f}s)", "green"))
+
+        # CRITICAL: Add delay after Player 1 connects to allow civserver game initialization
+        # FreeCiv3D proxy needs time to:
+        # 1. Establish CivCom connection to civserver
+        # 2. Execute /take command to control AI player
+        # 3. Process nation selection
+        # 4. Initialize game session
+        # Without this delay, Player 2 connection may fail with E140 (civserver busy)
+        initialization_delay = 3.0  # 3 seconds to allow game session setup
+        print(colored(f"[{time.time():.1f}] ⏳ Waiting {initialization_delay}s for game session initialization...", "yellow"))
+        await asyncio.sleep(initialization_delay)
 
         # Connect Player 2
         player2_start = time.time()
@@ -354,73 +548,175 @@ async def run_freeciv_game():
         print(f"  WebSocket test (spectator): wscat -c ws://localhost:8003/ws/spectator/{game_id}")
         print(colored("=" * 60 + "\n", "cyan"))
 
-        # Game loop
-        print(colored(f"\\nStarting FreeCiv LLM vs LLM game (max {_MAX_TURNS.value} turns)...", "green"))
+        # Game loop using FreeCiv's simultaneous turn model
+        # In FreeCiv, both players act during the same game turn and must call
+        # end_turn when finished. The civserver only advances the turn when ALL
+        # players have ended their turn.
+        print(colored(f"\nStarting FreeCiv LLM vs LLM game (max {_MAX_TURNS.value} turns)...", "green"))
+        print(colored("Using simultaneous turn model: both players act concurrently per turn", "blue"))
         print("=" * 60)
 
-        turn = 0
+        game_turn = 1
         game_over = False
+        turns_completed = 0
 
-        while turn < _MAX_TURNS.value and not game_over:
+        while game_turn <= _MAX_TURNS.value and not game_over:
             try:
-                if _VERBOSE.value:
-                    print(colored(f"\\nTurn {turn + 1}", "cyan"))
+                # Display turn header
+                print(colored(f"\n{'=' * 60}", "cyan"))
+                print(colored(f"GAME TURN {game_turn}", "cyan", attrs=['bold']))
+                print(colored(f"{'=' * 60}", "cyan"))
 
-                # Determine current player and use THEIR proxy
-                current_player = (turn % 2) + 1
-                current_agent = agent1 if current_player == 1 else agent2
-                current_proxy = proxy1 if current_player == 1 else proxy2
-                model_name = _PLAYER1_MODEL.value if current_player == 1 else _PLAYER2_MODEL.value
+                # Check for game over before executing turn
+                try:
+                    state = await proxy1.get_state()
+                    if isinstance(state, dict) and state.get("game_over", False):
+                        winner = state.get("winner", "Unknown")
+                        print(colored(f"\n🎉 Game Over! Winner: {winner}", "green"))
+                        game_over = True
+                        break
+                except Exception as e:
+                    print(colored(f"⚠️ Warning: Could not check game state: {e}", "yellow"))
 
-                # Get current game state from this player's proxy
-                state = await current_proxy.get_state()
+                # Execute both players' turns concurrently
+                # Each player will submit multiple actions until they call end_turn
+                turn_start_time = time.time()
 
-                # Check if game is over
-                if isinstance(state, dict) and state.get("game_over", False):
-                    winner = state.get("winner", "Unknown")
-                    print(colored(f"\\n🎉 Game Over! Winner: {winner}", "green"))
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.gather(
+                            execute_player_turn(
+                                player_num=1,
+                                agent=agent1,
+                                proxy=proxy1,
+                                game_turn=game_turn,
+                                model_name=_PLAYER1_MODEL.value,
+                                max_actions=MAX_ACTIONS_PER_TURN,
+                                verbose=_VERBOSE.value,
+                            ),
+                            execute_player_turn(
+                                player_num=2,
+                                agent=agent2,
+                                proxy=proxy2,
+                                game_turn=game_turn,
+                                model_name=_PLAYER2_MODEL.value,
+                                max_actions=MAX_ACTIONS_PER_TURN,
+                                verbose=_VERBOSE.value,
+                            ),
+                            return_exceptions=True
+                        ),
+                        timeout=TURN_TIMEOUT_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    print(colored(
+                        f"⚠️ Turn {game_turn} timed out after {TURN_TIMEOUT_SECONDS}s",
+                        "red"
+                    ))
+                    break
+
+                turn_duration = time.time() - turn_start_time
+
+                # Process results
+                player1_result, player2_result = results
+
+                # Check for exceptions
+                if isinstance(player1_result, Exception):
+                    print(colored(
+                        f"❌ Player 1 error ({type(player1_result).__name__}): {player1_result}",
+                        "red"
+                    ))
+                if isinstance(player2_result, Exception):
+                    print(colored(
+                        f"❌ Player 2 error ({type(player2_result).__name__}): {player2_result}",
+                        "red"
+                    ))
+
+                # Check for game server termination in either player's error
+                server_terminated = False
+                for result in [player1_result, player2_result]:
+                    if isinstance(result, dict) and result.get('error'):
+                        if 'SERVER_TERMINATED' in result['error']:
+                            server_terminated = True
+                            break
+
+                if server_terminated:
+                    print(colored(
+                        f"\n🛑 Game server terminated during Turn {game_turn} - ending game early",
+                        "red",
+                        attrs=['bold']
+                    ))
+                    print(colored(
+                        "   The FreeCiv civserver stopped responding. This usually happens after ~2 minutes of gameplay.",
+                        "yellow"
+                    ))
                     game_over = True
                     break
 
-                if _VERBOSE.value:
-                    print(f"Player {current_player} ({model_name.upper()}) thinking...")
+                # Log turn summary
+                if not isinstance(player1_result, Exception) and not isinstance(player2_result, Exception):
+                    print(colored(f"\n📊 Turn {game_turn} Summary:", "cyan"))
+                    print(f"  Player 1: {player1_result['action_count']} actions, "
+                          f"ended_turn: {player1_result['ended_turn']}")
+                    print(f"  Player 2: {player2_result['action_count']} actions, "
+                          f"ended_turn: {player2_result['ended_turn']}")
+                    print(f"  Duration: {turn_duration:.1f}s")
 
+                    # Check if both players ended their turn
+                    if not player1_result['ended_turn']:
+                        print(colored("  ⚠️ Player 1 did not call end_turn", "yellow"))
+                    if not player2_result['ended_turn']:
+                        print(colored("  ⚠️ Player 2 did not call end_turn", "yellow"))
+
+                # Verify turn advanced in the game server
                 try:
-                    # Get action from the agent based on current state
-                    action = await current_agent.get_action_async(state, current_proxy)
+                    state = await proxy1.get_state()
+                    new_turn = state.get('turn', game_turn)
 
-                    if action:
-                        # Send the action to the FreeCiv server using this player's proxy
-                        result = await current_proxy.send_action(action)
-
-                        if _VERBOSE.value:
-                            print(f"Turn {turn + 1}: Player {current_player} ({model_name}) - Action: {action.action_type if hasattr(action, 'action_type') else 'unknown'}")
-                            if result.get("success"):
-                                print(f"  ✓ Action executed successfully")
-                            else:
-                                print(f"  ✗ Action failed: {result.get('error', 'unknown error')}")
+                    if new_turn > game_turn:
+                        print(colored(
+                            f"✓ Turn advanced: {game_turn} → {new_turn}",
+                            "green",
+                            attrs=['bold']
+                        ))
+                        game_turn = new_turn
+                        turns_completed += 1
+                    elif new_turn == game_turn:
+                        print(colored(
+                            f"⚠️ Turn did not advance (still at turn {game_turn})",
+                            "yellow"
+                        ))
+                        print(colored(
+                            "   This may indicate players did not call end_turn, or server issue",
+                            "yellow"
+                        ))
+                        # Still increment to avoid infinite loop
+                        game_turn += 1
                     else:
-                        print(f"Turn {turn + 1}: Player {current_player} ({model_name}) - No action available")
+                        print(colored(
+                            f"⚠️ Unexpected turn value: {new_turn} (expected >= {game_turn})",
+                            "yellow"
+                        ))
+                        game_turn = new_turn
 
                 except Exception as e:
-                    print(colored(f"Error getting/sending action: {e}", "yellow"))
-                    if _VERBOSE.value:
-                        import traceback
-                        traceback.print_exc()
-
-                turn += 1
+                    print(colored(f"⚠️ Could not verify turn advancement: {e}", "yellow"))
+                    # Assume turn advanced to avoid infinite loop
+                    game_turn += 1
 
             except Exception as e:
-                print(colored(f"Error in turn {turn + 1}: {e}", "red"))
+                print(colored(f"❌ Error in game turn {game_turn}: {e}", "red"))
                 if _VERBOSE.value:
                     import traceback
                     traceback.print_exc()
                 break
 
-        if turn >= _MAX_TURNS.value:
-            print(colored(f"\\n⏰ Game ended after {_MAX_TURNS.value} turns (time limit)", "yellow"))
+        # Game end summary
+        print(colored(f"\n{'=' * 60}", "cyan"))
+        if game_turn > _MAX_TURNS.value:
+            print(colored(f"⏰ Game ended after {_MAX_TURNS.value} turns (max limit)", "yellow"))
 
-        print(colored(f"\\nGame completed. Total turns: {turn}", "blue"))
+        print(colored(f"Game completed. Turns played: {turns_completed}", "blue"))
+        print(colored(f"Final turn number: {game_turn}", "blue"))
 
         # Disconnect both proxies
         await proxy1.disconnect()
