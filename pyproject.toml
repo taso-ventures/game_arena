@@ -48,9 +48,15 @@ dev = [
   # For demo scripts and testing:
   "absl-py",
   "termcolor",
+  # Testing:
+  "pytest>=7.0.0",
+  "pytest-asyncio>=0.21.0",
+  "pytest-timeout>=2.1.0",
   # Development:
-  "pylint>=2.6.0",
-  "pyink",
+  "pylint>=2.15.0",
+  "pyink>=0.3.0",
+  "websockets>=11.0.0",
+  "tiktoken>=0.4.0",
 ]
 
 [tool.pyink]
