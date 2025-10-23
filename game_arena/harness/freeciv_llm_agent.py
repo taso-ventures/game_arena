@@ -435,6 +435,7 @@ class FreeCivLLMAgent(
       observation: Mapping[str, Any],
       state: FreeCivState,
       legal_actions: List[FreeCivAction],
+      action_context: Optional[Dict[str, Any]] = None
   ) -> FreeCivAction:
     """Generate action using LLM with context and strategy.
 
@@ -442,6 +443,9 @@ class FreeCivLLMAgent(
       observation: Game observation
       state: Current FreeCiv game state
       legal_actions: List of legal FreeCiv actions
+      action_context: Optional context about turn actions. See get_action_async()
+          for structure details. When provided, this context is forwarded to
+          the prompt builder to generate dynamic warnings for agents.
 
     Returns:
       Selected FreeCivAction
@@ -453,8 +457,10 @@ class FreeCivLLMAgent(
         [self.action_converter.action_to_string(a) for a in legal_actions[:3]]
     )
 
-    # Build context-aware prompt
-    prompt = self._build_context_aware_prompt(observation, state, legal_actions)
+    # Build context-aware prompt with action context
+    prompt = self._build_context_aware_prompt(
+        observation, state, legal_actions, action_context=action_context
+    )
 
     # Generate response using model (run in thread pool to avoid blocking event loop)
     self._num_model_calls += 1
@@ -527,6 +533,7 @@ class FreeCivLLMAgent(
       observation: Mapping[str, Any],
       state: FreeCivState,
       legal_actions: List[FreeCivAction],
+      action_context: Optional[Dict[str, Any]] = None
   ) -> tournament_util.ModelTextInput:
     """Build context-aware prompt for LLM.
 
@@ -534,6 +541,8 @@ class FreeCivLLMAgent(
       observation: Game observation
       state: Current game state
       legal_actions: Legal actions available
+      action_context: Optional context about turn actions. See get_action_async()
+          for structure details. Forwarded to prompt builder for dynamic warnings.
 
     Returns:
       Formatted prompt for model input
@@ -544,13 +553,14 @@ class FreeCivLLMAgent(
     # Get strategy configuration
     strategy_config = self.strategy_manager.get_strategy_config(self.strategy)
 
-    # Build enhanced prompt
+    # Build enhanced prompt with action context
     prompt_text = self.prompt_builder.build_enhanced_prompt(
         observation=observation,
         legal_actions=legal_actions,
         model_name=self.model.model_name,
         strategy_context=strategy_config,
         memory_context=memory_context,
+        action_context=action_context,
     )
 
     return tournament_util.ModelTextInput(prompt_text=prompt_text)
@@ -686,7 +696,10 @@ class FreeCivLLMAgent(
       self.strategy = new_strategy
 
   async def get_action_async(
-      self, observation: Mapping[str, Any], proxy_client: FreeCivProxyClient
+      self,
+      observation: Mapping[str, Any],
+      proxy_client: FreeCivProxyClient,
+      action_context: Optional[Dict[str, Any]] = None
   ) -> FreeCivAction:
     """Generate action asynchronously with WebSocket client.
 
@@ -696,6 +709,15 @@ class FreeCivLLMAgent(
     Args:
       observation: Game observation
       proxy_client: WebSocket client for FreeCiv3D communication
+      action_context: Optional context about turn actions. Example structure:
+          {
+              'actions_taken': 5,
+              'actions_remaining': 15,
+              'max_actions': 20,
+              'should_consider_end_turn': False
+          }
+          When provided, agents receive dynamic warnings about approaching
+          the action limit and guidance on when to call end_turn.
 
     Returns:
       Selected FreeCivAction object
@@ -731,9 +753,9 @@ class FreeCivLLMAgent(
         )
         raise ValueError(f"No legal actions for player {player_id}")
 
-    # Generate action
+    # Generate action with context
     selected_action = await self._generate_action_with_llm(
-        observation, state, legal_actions
+        observation, state, legal_actions, action_context=action_context
     )
 
     # Record in memory

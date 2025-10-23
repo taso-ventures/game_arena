@@ -208,6 +208,7 @@ class ActionPriority(enum.IntEnum):
     MEDIUM = 3  # unit_build
     LOW = 4  # unit_move
     LOWEST = 5  # city_work
+    TURN_END = 6  # end_turn - call when no more valuable actions remain
     DEFAULT = 10  # unknown actions
 
 
@@ -844,7 +845,7 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             observation: FreeCiv game state observation
             legal_actions: List of available FreeCiv actions
             model_name: Target model name for formatting
-            **kwargs: Additional parameters (player_id, etc.)
+            **kwargs: Additional parameters (player_id, action_context, etc.)
 
         Returns:
             Formatted prompt string optimized for entertainment and strategy
@@ -855,6 +856,9 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         """
         # Validate inputs using base class
         self.validate_model_name(model_name)
+
+        # Extract action context if provided
+        action_context = kwargs.get('action_context', None)
 
         # Prepare observation data
         obs_dict = self._prepare_observation(observation)
@@ -871,7 +875,9 @@ class FreeCivPromptBuilder(BasePromptBuilder):
 
         # Build strategic analysis components
         strategic_summary = self._build_strategic_summary(compressed_obs, current_player_id)
-        prioritized_actions = self._build_prioritized_actions(legal_actions)
+        prioritized_actions = self._build_prioritized_actions(
+            legal_actions, action_context=action_context
+        )
 
         # Get memory context and long-term strategy
         memory_context = self.memory_context.get_context_summary()
@@ -1049,11 +1055,16 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         """
         return self.observation_builder.build_strategic_summary(obs, player_id)
 
-    def _build_prioritized_actions(self, legal_actions: List[FreeCivAction]) -> str:
+    def _build_prioritized_actions(
+        self,
+        legal_actions: List[FreeCivAction],
+        action_context: Optional[Dict[str, Any]] = None
+    ) -> str:
         """Build prioritized list of available actions in canonical format.
 
         Args:
             legal_actions: List of legal FreeCiv actions
+            action_context: Optional context about turn actions (taken, remaining, etc.)
 
         Returns:
             Formatted string of prioritized actions with canonical format
@@ -1071,9 +1082,36 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         formatted_actions = []
         formatted_actions.append("\nCopy the EXACT action string from below (do NOT modify the format):\n")
 
+        # ADD DYNAMIC CONTEXT-AWARE INSTRUCTIONS
+        if action_context:
+            actions_taken = action_context.get('actions_taken', 0)
+            actions_remaining = action_context.get('actions_remaining', 0)
+            max_actions = action_context.get('max_actions', 20)
+            should_warn = action_context.get('should_consider_end_turn', False)
+
+            formatted_actions.append(f"TURN PROGRESS: {actions_taken} actions taken, {actions_remaining} remaining (max: {max_actions})")
+
+            if should_warn:
+                formatted_actions.append("")
+                formatted_actions.append("=" * 80)
+                formatted_actions.append("⚠️  WARNING: APPROACHING ACTION LIMIT!")
+                formatted_actions.append("=" * 80)
+                formatted_actions.append("")
+                formatted_actions.append("You have taken {} actions and have only {} actions remaining.".format(
+                    actions_taken, actions_remaining
+                ))
+                formatted_actions.append("")
+                formatted_actions.append("CRITICAL: Both players must call 'end_turn' for the game to advance.")
+                formatted_actions.append("          If you have no critical actions left, you SHOULD call end_turn now.")
+                formatted_actions.append("")
+                formatted_actions.append("Consider: Is your next action more valuable than ending the turn?")
+                formatted_actions.append("=" * 80)
+
+            formatted_actions.append("")  # Blank line
+
         for priority in sorted(action_groups.keys()):
             actions = action_groups[priority]
-            priority_name = ActionPriority(priority).name.title()
+            priority_name = ActionPriority(priority).name.title().replace('_', ' ')
             formatted_actions.append(f"\n{priority_name} Priority:")
 
             # Show top 10 actions per priority with full canonical format
@@ -1102,6 +1140,8 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             return ActionPriority.HIGH
         elif 'move' in action_type:
             return ActionPriority.LOW
+        elif 'end_turn' in action_type or action_type == 'end_turn':
+            return ActionPriority.TURN_END
         else:
             return ActionPriority.DEFAULT
 
@@ -1122,6 +1162,8 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             return "Medium impact: Infrastructure development"
         elif 'move' in action_type:
             return "Low-Medium impact: Positioning for future actions"
+        elif 'end_turn' in action_type or action_type == 'end_turn':
+            return "REQUIRED: Call this when you have no more valuable actions to take this turn. Both players must end_turn for the game to advance."
         else:
             return "Variable impact: Situation dependent"
 
