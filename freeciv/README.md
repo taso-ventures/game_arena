@@ -45,10 +45,10 @@ docker-compose up -d game-arena
 **Option A: Use the Custom Game Runner (Recommended)**
 ```bash
 # Basic game: Gemini vs GPT-4
-docker exec game-arena python run_freeciv_game.py
+docker exec game-arena python freeciv/run_freeciv_game.py
 
 # Custom game with different models and strategies
-docker exec game-arena python run_freeciv_game.py \\
+docker exec game-arena python freeciv/run_freeciv_game.py \\
   --player1=openai --player2=anthropic \\
   --strategy1=balanced --strategy2=science_victory \\
   --turns=100 --verbose=true
@@ -82,7 +82,7 @@ docker exec game-arena python -m game_arena.harness.freeciv_harness_demo \\
 
 **Gemini vs GPT-4 (Balanced vs Aggressive)**
 ```bash
-docker exec game-arena python run_freeciv_game.py \\
+docker exec game-arena python freeciv/run_freeciv_game.py \\
   --player1=gemini --player2=openai \\
   --strategy1=balanced --strategy2=aggressive_expansion \\
   --turns=75
@@ -90,7 +90,7 @@ docker exec game-arena python run_freeciv_game.py \\
 
 **Claude vs GPT-4 (Science vs Economic)**
 ```bash
-docker exec game-arena python run_freeciv_game.py \\
+docker exec game-arena python freeciv/run_freeciv_game.py \\
   --player1=anthropic --player2=openai \\
   --strategy1=science_victory --strategy2=economic_focus \\
   --turns=100
@@ -98,7 +98,7 @@ docker exec game-arena python run_freeciv_game.py \\
 
 **Fast Test Game**
 ```bash
-docker exec game-arena python run_freeciv_game.py \\
+docker exec game-arena python freeciv/run_freeciv_game.py \\
   --turns=10 --verbose=true
 ```
 
@@ -151,7 +151,7 @@ To run multiple games and collect statistics:
 # Run 5 games between different model pairs
 for i in {1..5}; do
   echo "Game $i"
-  docker exec game-arena python run_freeciv_game.py \\
+  docker exec game-arena python freeciv/run_freeciv_game.py \\
     --turns=50 --verbose=false
   sleep 5  # Brief pause between games
 done
@@ -181,7 +181,7 @@ docker logs fciv-net
 ## Next Steps
 
 1. **Start FreeCiv3D**: `cd ../freeciv3d && docker-compose up -d`
-2. **Run Your First Game**: `docker exec game-arena python run_freeciv_game.py`
+2. **Run Your First Game**: `docker exec game-arena python freeciv/run_freeciv_game.py`
 3. **Experiment**: Try different model combinations and strategies
 4. **Watch the Magic**: See LLMs playing civilization against each other! 🎮
 

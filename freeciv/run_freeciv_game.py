@@ -24,6 +24,7 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
+import webbrowser
 import requests
 from absl import app, flags
 import termcolor
@@ -98,6 +99,9 @@ _PLAYER1_LEADER = flags.DEFINE_string(
 )
 _PLAYER2_LEADER = flags.DEFINE_string(
     "player2_leader", "AI Player 2", "Leader name for Player 2"
+_OPEN_BROWSER = flags.DEFINE_boolean(
+    "open_browser", False, "Automatically open spectator URL in browser"
+)
 )
 
 # Game configuration constants for FreeCiv simultaneous turn model
@@ -547,6 +551,18 @@ async def run_freeciv_game():
         print(f"  Check proxy logs: docker exec fciv-net cat /docker/logs/freeciv-proxy-8002.log | grep '{game_id}'")
         print(f"  WebSocket test (spectator): wscat -c ws://localhost:8003/ws/spectator/{game_id}")
         print(colored("=" * 60 + "\n", "cyan"))
+
+        # Auto-open browser if requested
+        if _OPEN_BROWSER.value:
+            print(colored("🌐 Opening spectator view in browser...", "cyan"))
+            try:
+                # Wait a moment for services to be ready
+                await asyncio.sleep(2)
+                webbrowser.open(spectator_url)
+                print(colored(f"✅ Browser opened: {spectator_url}", "green"))
+            except Exception as e:
+                print(colored(f"❌ Failed to open browser: {e}", "red"))
+                print(colored(f"   Please manually open: {spectator_url}", "yellow"))
 
         # Game loop using FreeCiv's simultaneous turn model
         # In FreeCiv, both players act during the same game turn and must call
