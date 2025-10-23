@@ -902,7 +902,12 @@ class FreeCivProxyClient:
                   await self._start_background_tasks()
                   return True
               else:
-                  logger.error(f"Authentication failed: {auth_data}")
+                  # Redact sensitive data before logging authentication failure
+                  auth_data_safe = copy.deepcopy(auth_data)
+                  if "data" in auth_data_safe and isinstance(auth_data_safe["data"], dict):
+                      if "api_token" in auth_data_safe["data"]:
+                          auth_data_safe["data"]["api_token"] = "***REDACTED***"
+                  logger.error(f"Authentication failed: {auth_data_safe}")
 
           return False
 
