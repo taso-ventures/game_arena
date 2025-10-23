@@ -18,7 +18,7 @@ services:
   freeciv3d:
     build:
       context: .
-      dockerfile: docker/freeciv3d/Dockerfile
+      dockerfile: docker/freeciv3d-mock/Dockerfile
     ports:
       - "8080:8080"  # HTTP API
       - "7000:7000"  # WebSocket
