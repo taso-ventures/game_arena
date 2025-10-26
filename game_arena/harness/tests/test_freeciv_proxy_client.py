@@ -151,6 +151,33 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       messages = self.mock_server.get_recorded_messages()
       self.assertTrue(any(msg.get("type") == "ping" for msg in messages))
 
+  async def test_conn_ping_pong_handler(self):
+      """Test PACKET_CONN_PING/PONG handler to prevent civserver disconnects."""
+      await self.client.connect()
+
+      # Simulate civserver sending PACKET_CONN_PING
+      conn_ping_message = {
+          "type": "conn_ping",
+          "timestamp": time.time(),
+          "data": {}
+      }
+
+      # Send ping to client and trigger message handler
+      await self.mock_server.send_to_client("test_agent", json.dumps(conn_ping_message))
+
+      # Wait for client to process and respond
+      await asyncio.sleep(0.1)
+
+      # Check that client responded with PACKET_CONN_PONG
+      messages = self.mock_server.get_recorded_messages()
+      pong_messages = [msg for msg in messages if msg.get("type") == "conn_pong"]
+      self.assertGreater(len(pong_messages), 0, "Client should respond to conn_ping with conn_pong")
+
+      # Verify pong message structure
+      pong_msg = pong_messages[-1]
+      self.assertEqual(pong_msg["type"], "conn_pong")
+      self.assertIn("timestamp", pong_msg)
+
   async def test_disconnection_handling(self):
       """Test graceful disconnection."""
       await self.client.connect()
