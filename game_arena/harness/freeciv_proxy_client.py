@@ -113,6 +113,8 @@ class PacketID(Enum):
 
   UNIT_ORDERS = 31
   CITY_CHANGE_PRODUCTION = 85
+  PACKET_CONN_PING = 88
+  PACKET_CONN_PONG = 89
   GENERIC = 0
 
 
@@ -1646,6 +1648,8 @@ class MessageHandler:
           await self.handle_error(message)
       elif msg_type == "pong":
           await self.handle_pong(message)
+      elif msg_type == "conn_ping":
+          await self.handle_conn_ping(message)
       elif msg_type == "game_ready":
           await self.handle_game_ready(message)
       elif msg_type in ["welcome", "llm_connect"]:
@@ -1776,6 +1780,36 @@ class MessageHandler:
           message: Pong message
       """
       logger.debug("Received pong")
+
+  async def handle_conn_ping(self, message: Dict[str, Any]) -> None:
+      """Handle PACKET_CONN_PING from civserver and respond with PACKET_CONN_PONG.
+
+      This is critical for keeping the connection alive. The civserver sends
+      periodic ping packets, and if we don't respond with pong, it will
+      disconnect the client.
+
+      Args:
+          message: Ping message from civserver with structure:
+              {
+                  "type": "conn_ping",
+                  "data": {...}
+              }
+      """
+      logger.debug("Received PACKET_CONN_PING from civserver, responding with PACKET_CONN_PONG")
+
+      # Create pong response
+      pong_message = {
+          "type": "conn_pong",
+          "timestamp": time.time(),
+      }
+
+      # Send pong response back to server
+      if self.client and self.client.connection_manager:
+          try:
+              await self.client.connection_manager.send_message(json.dumps(pong_message))
+              logger.debug("Successfully sent PACKET_CONN_PONG to civserver")
+          except Exception as e:
+              logger.error(f"Failed to send PACKET_CONN_PONG: {e}")
 
   async def handle_game_ready(self, message: Dict[str, Any]) -> None:
       """Handle game_ready message from server.
