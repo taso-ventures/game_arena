@@ -99,9 +99,9 @@ _PLAYER1_LEADER = flags.DEFINE_string(
 )
 _PLAYER2_LEADER = flags.DEFINE_string(
     "player2_leader", "AI Player 2", "Leader name for Player 2"
+)
 _OPEN_BROWSER = flags.DEFINE_boolean(
     "open_browser", False, "Automatically open spectator URL in browser"
-)
 )
 
 # Game configuration constants for FreeCiv simultaneous turn model
@@ -196,7 +196,8 @@ async def execute_player_turn(
 
                 # Throttle delay to avoid E101 rate limiting from FreeCiv3D proxy
                 # The proxy enforces rate limits on message frequency
-                await asyncio.sleep(0.3)
+                # Increased from 0.3s to 1.0s to prevent rate limit errors
+                await asyncio.sleep(1.0)
 
                 # Check if turn advanced externally (game moved on without us)
                 current_turn = state.get('turn', game_turn)
@@ -235,6 +236,9 @@ async def execute_player_turn(
                     proxy.send_action(action),
                     timeout=ACTION_TIMEOUT_SECONDS
                 )
+
+                # Brief delay after sending action to allow server processing
+                await asyncio.sleep(0.5)
 
                 # Record action
                 action_type = action.action_type if hasattr(action, 'action_type') else 'unknown'
@@ -382,8 +386,17 @@ async def run_freeciv_game():
 
         # Connect Player 1
         print(colored(f"[{time.time():.1f}] Connecting Player 1 to LLM Gateway...", "blue"))
-        await proxy1.connect()
+        player1_success = await proxy1.connect()
         player1_auth_time = time.time() - auth_start_time
+
+        if not player1_success:
+            print(colored(f"[{time.time():.1f}] ✗ Player 1 authentication failed", "red"))
+            print(colored("   → Check if FreeCiv civserver is running: docker ps | grep fciv", "yellow"))
+            print(colored("   → Check logs: docker logs fciv-net | grep -E '(civserver|E140)'", "yellow"))
+            await proxy1.disconnect()
+            await proxy2.disconnect()
+            return False
+
         print(colored(f"[{time.time():.1f}] ✓ Player 1 connected (took {player1_auth_time:.1f}s)", "green"))
 
         # CRITICAL: Add delay after Player 1 connects to allow civserver game initialization
@@ -400,8 +413,17 @@ async def run_freeciv_game():
         # Connect Player 2
         player2_start = time.time()
         print(colored(f"[{time.time():.1f}] Connecting Player 2 to LLM Gateway...", "blue"))
-        await proxy2.connect()
+        player2_success = await proxy2.connect()
         player2_auth_time = time.time() - player2_start
+
+        if not player2_success:
+            print(colored(f"[{time.time():.1f}] ✗ Player 2 authentication failed", "red"))
+            print(colored("   → Check if FreeCiv civserver slots are available", "yellow"))
+            print(colored("   → May need to restart FreeCiv3D: docker-compose restart", "yellow"))
+            await proxy1.disconnect()
+            await proxy2.disconnect()
+            return False
+
         print(colored(f"[{time.time():.1f}] ✓ Player 2 connected (took {player2_auth_time:.1f}s)", "green"))
 
         # Wait for game_ready signal from server (event-driven with timeout)

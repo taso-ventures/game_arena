@@ -330,29 +330,37 @@ class FreeCivRuleBasedParser(parsers.RuleBasedMoveParser):
         if len(text) > self._config.max_input_size:
             return None
 
-        # Comprehensive canonical format patterns
+        # IMPROVED: More flexible canonical format patterns
+        # Matches canonical format even with surrounding text or variations
         # Order matters - more specific patterns first
         canonical_patterns = [
             # Tech research: tech_research_player(1)_target(Alphabet)
             r'(tech_research_player\(\d+\)_target\([A-Za-z_\s]+\))',
 
-            # Unit movement: unit_move_unit(101)_to(2,3)
-            r'(unit_move_(?:unit|warrior|settler|worker)\(\d+\)_to\(\d+,\s*\d+\))',
+            # Unit movement: unit_move_<anything>(101)_to(2,3)
+            # Changed to match ANY unit type name (not just hardcoded warrior/settler/worker)
+            r'(unit_move_[A-Za-z_]+\(\d+\)_to\(\d+,\s*\d+\))',
 
-            # Unit attack: unit_attack_unit(101)_target(202)
-            r'(unit_attack_(?:unit|warrior|settler)\(\d+\)_target\(\d+\))',
+            # Unit attack: unit_attack_<anything>(101)_target(202)
+            r'(unit_attack_[A-Za-z_]+\(\d+\)_target\(\d+\))',
 
-            # City production: city_production_city(5)_target(Warrior)
-            r'(city_production_(?:city|[A-Za-z]+)\(\d+\)_target\([A-Za-z_\s]+\))',
+            # City production: city_production_<anything>(5)_target(Warrior)
+            r'(city_production_[A-Za-z_]+\(\d+\)_target\([A-Za-z_\s]+\))',
 
-            # City improvement: city_build_improvement_city(5)_target(Barracks)
-            r'(city_build_improvement_(?:city|[A-Za-z]+)\(\d+\)_target\([A-Za-z_\s]+\))',
+            # City improvement: city_build_improvement_<anything>(5)_target(Barracks)
+            r'(city_build_improvement_[A-Za-z_]+\(\d+\)_target\([A-Za-z_\s]+\))',
 
-            # Unit fortify: unit_fortify_unit(101)
-            r'(unit_fortify_(?:unit|warrior)\(\d+\))',
+            # Unit fortify: unit_fortify_<anything>(101)
+            r'(unit_fortify_[A-Za-z_]+\(\d+\))',
 
-            # Unit explore: unit_explore_unit(101)
-            r'(unit_explore_(?:unit|scout)\(\d+\))',
+            # Unit explore: unit_explore_<anything>(101)
+            r'(unit_explore_[A-Za-z_]+\(\d+\))',
+
+            # Unit build improvement: unit_build_improvement_<anything>(101)_target(road)
+            r'(unit_build_improvement_[A-Za-z_]+\(\d+\)_target\([A-Za-z_\s]+\))',
+
+            # End turn: end_turn (simple pattern, no complex parameters)
+            r'(end_turn)',
         ]
 
         for pattern in canonical_patterns:

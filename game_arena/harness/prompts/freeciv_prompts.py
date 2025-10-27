@@ -1066,7 +1066,22 @@ class FreeCivPromptBuilder(BasePromptBuilder):
 
         # Format prioritized actions with CANONICAL FORMAT for LLM to copy
         formatted_actions = []
-        formatted_actions.append("\nCopy the EXACT action string from below (do NOT modify the format):\n")
+        formatted_actions.append("\n" + "=" * 80)
+        formatted_actions.append("RESPONSE FORMAT REQUIREMENTS")
+        formatted_actions.append("=" * 80)
+        formatted_actions.append("")
+        formatted_actions.append("⚠️  CRITICAL: Respond with ONLY the action string, nothing else!")
+        formatted_actions.append("")
+        formatted_actions.append("✅ CORRECT format:")
+        formatted_actions.append("   unit_move_settlers(101)_to(2,3)")
+        formatted_actions.append("")
+        formatted_actions.append("❌ WRONG format (adds explanation):")
+        formatted_actions.append("   I will move my settlers: unit_move_settlers(101)_to(2,3)")
+        formatted_actions.append("")
+        formatted_actions.append("Copy EXACTLY one action string from the list below.")
+        formatted_actions.append("Do NOT add reasoning, explanations, or extra text.")
+        formatted_actions.append("=" * 80)
+        formatted_actions.append("")
 
         # ADD DYNAMIC CONTEXT-AWARE INSTRUCTIONS
         if action_context:

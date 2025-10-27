@@ -461,6 +461,18 @@ class FreeCivLLMAgent(
         self.model.generate_with_text_input, prompt
     )
 
+    # DIAGNOSTIC: Log LLM response for debugging parser issues
+    absl_logging.info(
+        "🤖 LLM response (first 300 chars): %s",
+        response.main_response[:300]
+    )
+    if len(response.main_response) > 300:
+        absl_logging.debug(
+            "Full LLM response (%d chars): %s",
+            len(response.main_response),
+            response.main_response
+        )
+
     # Parse response to FreeCivAction
     selected_action = self._parse_llm_response(
         response.main_response, legal_actions
@@ -598,20 +610,24 @@ class FreeCivLLMAgent(
       # Convert back to FreeCivAction
       return self.action_converter.string_to_action(parsed_action_string)
     else:
-      # Fallback strategy: prefer safe actions over potentially destructive ones
-      absl_logging.info("Failed to parse LLM response, using fallback action")
-      absl_logging.debug("LLM response: %s", response_text[:500])
+      # IMPROVED: Strategy-aware fallback selection
+      absl_logging.warning(
+          "⚠️  Parser failed on LLM response, using strategy-aware fallback (strategy=%s)",
+          self.strategy
+      )
+      absl_logging.debug("Failed LLM response: %s", response_text[:500])
 
-      # Try to find a safe default action (tech research, explore, fortify)
-      safe_action_types = ['tech_research', 'unit_explore', 'unit_fortify']
-      for action in legal_actions:
-        if action.action_type in safe_action_types:
-          absl_logging.debug(f"Selected safe fallback action: {action.action_type}")
-          return action
+      # Choose fallback action based on agent strategy
+      selected_fallback = self._choose_strategic_fallback(legal_actions)
 
-      # If no safe action found, return first legal action
-      absl_logging.debug("No safe action found, using first legal action")
-      return legal_actions[0]
+      absl_logging.info(
+          "📋 Fallback selected: %s (type=%s) based on %s strategy",
+          self.action_converter.action_to_string(selected_fallback),
+          selected_fallback.action_type,
+          self.strategy
+      )
+
+      return selected_fallback
 
   def _is_valid_canonical_format(self, action_string: str) -> bool:
     """Validate that action string follows canonical format.
@@ -642,6 +658,73 @@ class FreeCivLLMAgent(
     ]
 
     return any(action_string.startswith(prefix) for prefix in valid_prefixes)
+
+  def _choose_strategic_fallback(
+      self, legal_actions: List[FreeCivAction]
+  ) -> FreeCivAction:
+    """Choose fallback action based on agent strategy and game state.
+
+    This method provides intelligent fallback when LLM response parsing fails.
+    Instead of always defaulting to tech_research, it selects actions that align
+    with the agent's strategy (balanced, aggressive_expansion, economic, etc.).
+
+    Args:
+      legal_actions: List of legal FreeCiv actions
+
+    Returns:
+      Selected fallback FreeCivAction that aligns with strategy
+
+    Strategy priority mappings:
+      - aggressive_expansion: Prioritize unit movement, attacks, military production
+      - balanced: Mix of movement, production, and research
+      - economic: Prioritize city production, improvements, then research
+      - defensive: Prioritize fortify, city improvements, research
+    """
+    if not legal_actions:
+      raise ValueError("Cannot choose fallback from empty legal_actions list")
+
+    # Define strategy-based action type priorities
+    strategy_priorities = {
+        "aggressive_expansion": [
+            'unit_move', 'unit_attack', 'unit_explore',
+            'city_production', 'tech_research'
+        ],
+        "balanced": [
+            'unit_move', 'city_production', 'tech_research',
+            'unit_explore', 'unit_fortify'
+        ],
+        "economic": [
+            'city_production', 'city_build_improvement', 'tech_research',
+            'unit_move', 'unit_explore'
+        ],
+        "defensive": [
+            'unit_fortify', 'city_build_improvement', 'city_production',
+            'tech_research', 'unit_move'
+        ],
+    }
+
+    # Get priority list for current strategy (default to balanced)
+    priority_list = strategy_priorities.get(
+        self.strategy, strategy_priorities["balanced"]
+    )
+
+    # Find first action matching priority order
+    for action_type in priority_list:
+      for action in legal_actions:
+        if action.action_type == action_type:
+          absl_logging.debug(
+              "Strategy fallback: found %s action (priority %d)",
+              action_type,
+              priority_list.index(action_type) + 1
+          )
+          return action
+
+    # Ultimate fallback: return first legal action
+    absl_logging.warning(
+        "No priority action found for strategy %s, using first legal action",
+        self.strategy
+    )
+    return legal_actions[0]
 
   def _record_action_in_memory(
       self,

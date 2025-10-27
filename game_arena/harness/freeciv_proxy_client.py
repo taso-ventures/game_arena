@@ -902,7 +902,34 @@ class FreeCivProxyClient:
                   if "data" in auth_data_safe and isinstance(auth_data_safe["data"], dict):
                       if "api_token" in auth_data_safe["data"]:
                           auth_data_safe["data"]["api_token"] = "***REDACTED***"
-                  logger.error(f"Authentication failed: {auth_data_safe}")
+
+                  # Extract error details for diagnostic guidance
+                  error_code = auth_data_safe.get("data", {}).get("code", "UNKNOWN")
+                  error_msg = auth_data_safe.get("data", {}).get("message", "Unknown error")
+
+                  logger.error(f"❌ Authentication failed [{error_code}]: {error_msg}")
+
+                  # Provide specific diagnostic guidance based on error code
+                  if error_code == "E140":
+                      logger.error("   → E140: LLM Gateway cannot connect to civserver")
+                      logger.error("   → Possible causes:")
+                      logger.error("      1. Civserver not running")
+                      logger.error("      2. All civserver game slots occupied")
+                      logger.error("      3. Previous game session not cleaned up")
+                      logger.error("   → Try: docker-compose -f ../freeciv3d/docker-compose.yml restart")
+                  elif error_code == "E142":
+                      logger.error("   → E142: Player registration or nation selection failed")
+                      logger.error("   → Possible causes:")
+                      logger.error("      1. Nation already taken by another player")
+                      logger.error("      2. Invalid nation name")
+                      logger.error("      3. Civserver game configuration issue")
+                      logger.error("   → Try different nations or check civserver logs")
+                  elif error_code == "E120":
+                      logger.error("   → E120: Not authenticated as LLM agent")
+                      logger.error("   → This should not occur during initial auth")
+                      logger.error("   → Indicates LLM Gateway session management issue")
+
+                  logger.debug(f"Full authentication response: {auth_data_safe}")
 
           return False
 
