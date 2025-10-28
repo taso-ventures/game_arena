@@ -109,13 +109,23 @@ CACHE_KEY_PATTERN = re.compile(r'^[a-zA-Z0-9_.-]+$')
 
 
 class PacketID(Enum):
-  """FreeCiv packet type identifiers."""
+  """FreeCiv packet type identifiers.
 
-  UNIT_ORDERS = 31
-  CITY_CHANGE_PRODUCTION = 85
-  PACKET_CONN_PING = 88
-  PACKET_CONN_PONG = 89
-  GENERIC = 0
+  These IDs correspond to the FreeCiv network protocol packet types.
+  Currently defined for documentation and potential future use in binary
+  protocol handling. The current JSON-based message protocol uses string
+  message types instead of numeric packet IDs.
+
+  References:
+    - FreeCiv3D LLM Gateway uses JSON messages with "type" field
+    - Original FreeCiv protocol uses numeric packet IDs
+  """
+
+  UNIT_ORDERS = 31  # Send unit movement/action orders
+  CITY_CHANGE_PRODUCTION = 85  # Change city production target
+  PACKET_CONN_PING = 88  # Connection keepalive ping from server
+  PACKET_CONN_PONG = 89  # Connection keepalive pong response from client
+  GENERIC = 0  # Generic/unknown packet type
 
 
 # Configuration constants - these should be configurable per deployment
@@ -1792,24 +1802,32 @@ class MessageHandler:
           message: Ping message from civserver with structure:
               {
                   "type": "conn_ping",
-                  "data": {...}
+                  "timestamp": <int>
               }
       """
-      logger.debug("Received PACKET_CONN_PING from civserver, responding with PACKET_CONN_PONG")
+      logger.debug("Received PACKET_CONN_PING, sending PACKET_CONN_PONG response")
 
-      # Create pong response
+      # Validate client and connection manager are available
+      if not self.client or not self.client.connection_manager:
+          logger.warning("Cannot send PACKET_CONN_PONG: client or connection_manager not available")
+          return
+
+      # Verify connection is in CONNECTED state
+      if self.client.connection_manager.state != ConnectionState.CONNECTED:
+          logger.warning(f"Cannot send PACKET_CONN_PONG: connection state is {self.client.connection_manager.state}")
+          return
+
+      # Create pong response with integer timestamp to match heartbeat format
       pong_message = {
           "type": "conn_pong",
-          "timestamp": time.time(),
+          "timestamp": int(time.time()),
       }
 
       # Send pong response back to server
-      if self.client and self.client.connection_manager:
-          try:
-              await self.client.connection_manager.send_message(json.dumps(pong_message))
-              logger.debug("Successfully sent PACKET_CONN_PONG to civserver")
-          except Exception as e:
-              logger.error(f"Failed to send PACKET_CONN_PONG: {e}")
+      try:
+          await self.client.connection_manager.send_message(json.dumps(pong_message))
+      except Exception as e:
+          logger.error(f"Failed to send PACKET_CONN_PONG: {e}")
 
   async def handle_game_ready(self, message: Dict[str, Any]) -> None:
       """Handle game_ready message from server.
@@ -1869,21 +1887,47 @@ class MessageHandler:
 
 
 class ProtocolTranslator:
-  """Translates between Game Arena and FreeCiv protocol formats."""
+  """Translates between Game Arena and FreeCiv protocol formats.
+
+  IMPORTANT: This class handles FreeCiv3D WebSocket JSON protocol, not FreeCiv
+  binary packet protocol. There are two different packet formats in the codebase:
+
+  1. FreeCiv Binary Packets (FreeCivAction.to_packet()):
+     - Used by freeciv_client.py for direct civserver communication
+     - Contains 'pid' field (packet ID) and FreeCiv-specific structure
+     - Example: {'pid': 31, 'type': 'unit_move', 'actor': 101, ...}
+
+  2. FreeCiv3D WebSocket JSON Actions (this class):
+     - Used by freeciv_proxy_client.py for FreeCiv3D LLM Gateway communication
+     - Contains 'action_type', 'actor_id', 'target', 'parameters'
+     - No 'pid' field - uses JSON message types instead
+     - Example: {'action_type': 'unit_move', 'actor_id': 101, 'target': {...}}
+
+  See ../freeciv3d/docs/llm_websocket_protocol.md for full protocol specification.
+  """
 
   def to_freeciv_packet(self, action: FreeCivAction) -> Dict[str, Any]:
-      """Convert FreeCivAction to proxy's expected action format.
+      """Convert FreeCivAction to FreeCiv3D WebSocket action format.
 
-      The proxy expects actions in this format:
-      {'action_type': '...', 'actor_id': ..., 'target': {...}, 'parameters': {...}}
+      This converts to the JSON action format expected by the FreeCiv3D LLM Gateway,
+      which goes in the 'data' field of action messages. This is NOT the FreeCiv
+      binary packet format with 'pid' field.
 
-      NOT the FreeCiv packet format! The proxy handles the packet conversion internally.
+      FreeCiv3D WebSocket action format:
+      {
+        'action_type': 'unit_move',
+        'actor_id': 42,
+        'target': {'x': 11, 'y': 21},
+        'parameters': {}
+      }
+
+      The FreeCiv3D proxy handles conversion to civserver binary packets internally.
 
       Args:
           action: FreeCivAction to convert
 
       Returns:
-          Action dictionary compatible with proxy's action validator
+          Action dictionary for FreeCiv3D WebSocket protocol 'data' field
       """
       # Build base action structure
       packet = {

@@ -187,12 +187,17 @@ class MockFreeCivServer:
             "connected_at": time.time(),
         }
 
+        # Match the expected authentication response structure from FreeCiv3D
         response = {
-            "type": "llm_connect_response",
-            "status": "ready",
-            "player_id": 1,
-            "game_id": game_id,
-            "capabilities": ["state_query", "action", "ping"],
+            "type": "llm_connect",
+            "data": {
+                "type": "auth_success",
+                "success": True,
+                "player_id": 1,
+                "game_id": game_id,
+                "civserver_port": 5556,
+                "capabilities": ["state_query", "action", "ping"],
+            }
         }
         await websocket.send(json.dumps(response))
 

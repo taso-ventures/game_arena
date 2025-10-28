@@ -155,18 +155,30 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       """Test PACKET_CONN_PING/PONG handler to prevent civserver disconnects."""
       await self.client.connect()
 
+      # Clear any authentication messages from connection
+      self.mock_server.clear_recorded_messages()
+
       # Simulate civserver sending PACKET_CONN_PING
       conn_ping_message = {
           "type": "conn_ping",
-          "timestamp": time.time(),
-          "data": {}
+          "timestamp": int(time.time())
       }
 
-      # Send ping to client and trigger message handler
+      # Send ping to client
       await self.mock_server.send_to_client("test_agent", json.dumps(conn_ping_message))
 
-      # Wait for client to process and respond
-      await asyncio.sleep(0.1)
+      # Manually trigger message processing by receiving the message
+      # In a real scenario, this would be handled by a background message loop
+      # or when the client calls _wait_for_response during an operation
+      incoming_message = await self.client.connection_manager.receive_message()
+      if incoming_message:
+          import json as json_module
+          data = json_module.loads(incoming_message)
+          # Process the conn_ping message through the handler
+          await self.client.message_handler.handle_message(data)
+
+      # Wait for pong to be sent and received by mock server
+      await asyncio.sleep(0.2)
 
       # Check that client responded with PACKET_CONN_PONG
       messages = self.mock_server.get_recorded_messages()
@@ -177,6 +189,50 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       pong_msg = pong_messages[-1]
       self.assertEqual(pong_msg["type"], "conn_pong")
       self.assertIn("timestamp", pong_msg)
+      self.assertIsInstance(pong_msg["timestamp"], int, "Timestamp should be an integer")
+
+  async def test_conn_ping_with_no_client(self):
+      """Test PACKET_CONN_PING handler when client reference is None."""
+      # Create a MessageHandler without a client reference
+      handler = MessageHandler(client=None)
+
+      conn_ping_message = {
+          "type": "conn_ping",
+          "timestamp": int(time.time())
+      }
+
+      # Should not raise an exception, just log a warning
+      await handler.handle_conn_ping(conn_ping_message)
+
+      # No pong should be recorded since client is None
+      messages = self.mock_server.get_recorded_messages()
+      pong_messages = [msg for msg in messages if msg.get("type") == "conn_pong"]
+      self.assertEqual(len(pong_messages), 0, "No pong should be sent when client is None")
+
+  async def test_conn_ping_when_disconnected(self):
+      """Test PACKET_CONN_PING handler when connection is not in CONNECTED state."""
+      await self.client.connect()
+      self.mock_server.clear_recorded_messages()
+
+      # Disconnect the client
+      await self.client.disconnect()
+
+      # Simulate civserver sending PACKET_CONN_PING while disconnected
+      conn_ping_message = {
+          "type": "conn_ping",
+          "timestamp": int(time.time())
+      }
+
+      # Try to handle ping when disconnected - should be ignored
+      await self.client.message_handler.handle_conn_ping(conn_ping_message)
+
+      # Wait briefly
+      await asyncio.sleep(0.1)
+
+      # No pong should be sent since connection is not CONNECTED
+      messages = self.mock_server.get_recorded_messages()
+      pong_messages = [msg for msg in messages if msg.get("type") == "conn_pong"]
+      self.assertEqual(len(pong_messages), 0, "No pong should be sent when disconnected")
 
   async def test_disconnection_handling(self):
       """Test graceful disconnection."""
@@ -379,7 +435,12 @@ class TestProtocolTranslator(unittest.TestCase):
       self.translator = ProtocolTranslator()
 
   def test_action_to_packet_conversion(self):
-      """Test converting FreeCivAction to FreeCiv packet format."""
+      """Test converting FreeCivAction to FreeCiv3D WebSocket action format.
+
+      Note: This tests conversion to FreeCiv3D WebSocket JSON format,
+      NOT the FreeCiv binary packet format with 'pid' field.
+      The FreeCiv3D proxy expects action dicts in the 'data' field of action messages.
+      """
       action = FreeCivAction(
           action_type="unit_move",
           actor_id=101,
@@ -390,10 +451,23 @@ class TestProtocolTranslator(unittest.TestCase):
 
       packet = self.translator.to_freeciv_packet(action)
 
+      # Verify it returns an action dictionary matching FreeCiv3D WebSocket protocol
       self.assertIsInstance(packet, dict)
-      self.assertIn("pid", packet)
-      self.assertIn("data", packet)
-      self.assertEqual(packet["data"]["unit_id"], 101)
+      self.assertIn("action_type", packet)
+      self.assertIn("actor_id", packet)
+
+      # Verify action_type and actor_id match input
+      self.assertEqual(packet["action_type"], "unit_move")
+      self.assertEqual(packet["actor_id"], 101)
+
+      # Verify target is included
+      self.assertIn("target", packet)
+      self.assertEqual(packet["target"]["x"], 5)
+      self.assertEqual(packet["target"]["y"], 7)
+
+      # Verify parameters is included
+      self.assertIn("parameters", packet)
+      self.assertEqual(packet["parameters"], {})
 
   def test_packet_from_freeciv_conversion(self):
       """Test converting FreeCiv packet to Game Arena format."""
@@ -412,7 +486,11 @@ class TestProtocolTranslator(unittest.TestCase):
       self.assertEqual(result["data"]["turn"], 42)
 
   def test_unknown_action_type(self):
-      """Test handling of unknown action types."""
+      """Test handling of unknown action types.
+
+      Unknown action types should still convert to valid action dictionaries.
+      The FreeCiv3D proxy or server will handle validation and rejection.
+      """
       action = FreeCivAction(
           action_type="test_unknown_action",
           actor_id=999,
@@ -423,9 +501,20 @@ class TestProtocolTranslator(unittest.TestCase):
 
       packet = self.translator.to_freeciv_packet(action)
 
-      # Should have default packet structure
+      # Should return valid action dictionary even for unknown action types
       self.assertIsInstance(packet, dict)
-      self.assertIn("pid", packet)
+      self.assertIn("action_type", packet)
+      self.assertIn("actor_id", packet)
+
+      # Verify unknown action_type is preserved
+      self.assertEqual(packet["action_type"], "test_unknown_action")
+      self.assertEqual(packet["actor_id"], 999)
+
+      # Verify empty target and parameters are included
+      self.assertIn("target", packet)
+      self.assertEqual(packet["target"], {})
+      self.assertIn("parameters", packet)
+      self.assertEqual(packet["parameters"], {})
 
 
 class TestMessageQueue(unittest.IsolatedAsyncioTestCase):
