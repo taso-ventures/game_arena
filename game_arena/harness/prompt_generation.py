@@ -18,7 +18,8 @@ from typing import Generic, Protocol, runtime_checkable
 
 import pyspiel
 
-from game_arena.harness import prompts, tournament_util
+from game_arena.harness import tournament_util
+from game_arena.harness.prompt_templates import PromptTemplate
 
 
 @runtime_checkable
@@ -31,7 +32,7 @@ class PromptGeneratorSupportsImageText(
     # renderers that work with PySpiel or call PySpiel for rendering:
     def generate_prompt_with_image_text(
         self,
-        prompt_template: prompts.PromptTemplate,
+        prompt_template: PromptTemplate,
         game_short_name: str,
         state: pyspiel.State | None = None,
         **prompt_substitutions,
@@ -44,7 +45,7 @@ class PromptGeneratorSupportsText(Generic[tournament_util.ModelTextInputT], Prot
 
     def generate_prompt_with_text_only(
         self,
-        prompt_template: prompts.PromptTemplate,
+        prompt_template: PromptTemplate,
         game_short_name: str,
         **prompt_substitutions,
     ) -> tournament_util.ModelTextInputT: ...
@@ -55,7 +56,7 @@ class PromptGeneratorText(PromptGeneratorSupportsText):
 
     def generate_prompt_with_text_only(
         self,
-        prompt_template: prompts.PromptTemplate,
+        prompt_template: PromptTemplate,
         game_short_name: str,
         **prompt_substitutions,
     ) -> tournament_util.ModelTextInput:

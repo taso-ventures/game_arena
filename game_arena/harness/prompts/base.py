@@ -19,6 +19,7 @@ and strategically sound prompts across different games and models.
 """
 
 import os
+import re
 import yaml
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -199,6 +200,8 @@ class BasePromptBuilder(ABC):
     def get_model_config(self, model_name: str) -> Dict[str, Any]:
         """Get configuration for a specific model.
 
+        Normalizes model names to support model variants.
+
         Args:
             model_name: Name of the model
 
@@ -208,13 +211,16 @@ class BasePromptBuilder(ABC):
         Raises:
             ValueError: If model is not supported
         """
-        if model_name not in self.model_configs['models']:
+        # Normalize model name to config key
+        normalized_name = self._normalize_model_name(model_name)
+
+        if normalized_name not in self.model_configs['models']:
             supported_models = list(self.model_configs['models'].keys())
             raise ValueError(
                 f"Unsupported model '{model_name}'. "
                 f"Supported models: {supported_models}"
             )
-        return self.model_configs['models'][model_name]
+        return self.model_configs['models'][normalized_name]
 
     def format_for_model(self, content: str, model_name: str) -> str:
         """Format content according to model preferences.
@@ -301,8 +307,61 @@ class BasePromptBuilder(ABC):
             return strategy_frameworks.get('balanced_growth',
                 'Pursue steady, balanced development across all areas.')
 
+    def _normalize_model_name(self, model_name: str) -> str:
+        """Normalize vendor-specific model names to config keys.
+
+        Maps actual API model names to their abstract config equivalents.
+        Allows specific model variants to have custom configs if defined.
+
+        Args:
+            model_name: Raw model name from API (e.g., "gemini-2.5-flash")
+
+        Returns:
+            Normalized model name for config lookup (e.g., "gemini")
+
+        Examples:
+            "gemini-2.5-flash" -> "gemini" (if "gemini-2.5-flash" not in config)
+            "gpt-4.1" -> "gpt-4" (if "gpt-4.1" not in config)
+            "claude-3-sonnet-20240229" -> "claude"
+        """
+        # First check if exact name exists in config (allows specific overrides)
+        if model_name in self.model_configs['models']:
+            return model_name
+
+        # Normalization rules for common model families
+        normalization_patterns = [
+            # Gemini models
+            (r'^gemini-[\d.]+.*', 'gemini'),
+            (r'^gemini-pro.*', 'gemini'),
+            (r'^gemini-ultra.*', 'gemini'),
+
+            # GPT models
+            (r'^gpt-4\.[\d]+.*', 'gpt-4'),
+            (r'^gpt-4-.*', 'gpt-4'),
+            (r'^gpt-5.*', 'gpt-5'),
+            (r'^o1-.*', 'gpt'),
+
+            # Claude models
+            (r'^claude-3-.*', 'claude'),
+            (r'^claude-2.*', 'claude'),
+
+            # DeepSeek models
+            (r'^deepseek-.*', 'deepseek'),
+        ]
+
+        for pattern, normalized in normalization_patterns:
+            if re.match(pattern, model_name):
+                # Check if normalized name exists in config
+                if normalized in self.model_configs['models']:
+                    return normalized
+
+        # Fallback: return original name (will fail validation with clear error)
+        return model_name
+
     def validate_model_name(self, model_name: str) -> None:
         """Validate that the model name is supported.
+
+        Normalizes model names before validation to support model variants.
 
         Args:
             model_name: Model name to validate
@@ -313,10 +372,13 @@ class BasePromptBuilder(ABC):
         if not isinstance(model_name, str):
             raise ValueError(f"Model name must be a string, got {type(model_name)}")
 
-        if model_name not in self.model_configs['models']:
+        # Normalize model name to config key
+        normalized_name = self._normalize_model_name(model_name)
+
+        if normalized_name not in self.model_configs['models']:
             supported_models = list(self.model_configs['models'].keys())
             raise ValueError(
-                f"Unsupported model '{model_name}'. "
+                f"Unsupported model '{model_name}' (normalized: '{normalized_name}'). "
                 f"Supported models: {supported_models}"
             )
 

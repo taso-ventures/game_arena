@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sys
 from collections import OrderedDict
@@ -9,6 +10,8 @@ from typing import (Any, ClassVar, Dict, Iterable, List, Mapping, Optional,
                     Sequence, Tuple)
 
 from pydantic import BaseModel, Field, model_validator, validator
+
+logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - optional dependency
     import pyspiel  # type: ignore
@@ -674,9 +677,15 @@ class FreeCivAction(BaseModel):
                 r"produce\s+(\w+)\s+in\s+(\w+)",
             ],
             "tech_research": [
+                # Multi-word tech names (e.g., "Bronze Working", "Code of Laws")
+                # Capture until common stop words or punctuation
+                r"research\s+([A-Z][A-Za-z\s]+?)(?:\s+because|\s+to|\s+for|,|\.|$)",
+                r"study\s+([A-Z][A-Za-z\s]+?)(?:\s+because|\s+to|\s+for|,|\.|$)",
+                r"learn\s+([A-Z][A-Za-z\s]+?)(?:\s+because|\s+to|\s+for|,|\.|$)",
+                # Also match canonical format within natural language
+                r"tech_research_player\(\d+\)_target\(([^)]+)\)",
+                # Fallback for single word (lowercase, for partial matches)
                 r"research\s+(\w+)",
-                r"study\s+(\w+)",
-                r"learn\s+(\w+)",
             ],
             "unit_fortify": [
                 r"fortify\s+(?:unit\s+)?(\d+)",
@@ -858,6 +867,64 @@ class FreeCivAction(BaseModel):
 
         return template.format(**format_args)
 
+    def __eq__(self, other: Any) -> bool:
+        """Compare actions based on semantic content, ignoring metadata.
+
+        Two actions are considered equal if they represent the same game action,
+        regardless of parsing metadata (confidence, parse_method, strategic_score,
+        description, priority).
+
+        This ensures that actions parsed from different sources (LLM output vs.
+        proxy legal_actions list) are correctly identified as equal when they
+        represent the same game action.
+
+        Args:
+            other: Object to compare with
+
+        Returns:
+            True if actions are semantically equivalent, False otherwise
+        """
+        if not isinstance(other, FreeCivAction):
+            return False
+
+        # Filter out metadata fields from parameters for comparison
+        def filter_metadata_params(params: Dict[str, Any]) -> Dict[str, Any]:
+            """Remove metadata fields that don't affect game semantics."""
+            return {k: v for k, v in params.items() if k not in ('description', 'priority')}
+
+        self_params = filter_metadata_params(self.parameters)
+        other_params = filter_metadata_params(other.parameters)
+
+        # Compare semantic fields only (not metadata)
+        return (
+            self.action_type == other.action_type
+            and self.actor_id == other.actor_id
+            and self.target == other.target
+            and self_params == other_params
+            and self.source == other.source
+        )
+
+    def __hash__(self) -> int:
+        """Hash based on semantic content for use in sets/dicts.
+
+        Must be consistent with __eq__ - if two actions are equal,
+        they must have the same hash.
+        """
+        # Filter out metadata fields from parameters (must match __eq__)
+        filtered_params = {k: v for k, v in self.parameters.items() if k not in ('description', 'priority')}
+
+        # Convert target dict to hashable tuple of items
+        target_tuple = tuple(sorted(self.target.items())) if self.target else ()
+        params_tuple = tuple(sorted(filtered_params.items())) if filtered_params else ()
+
+        return hash((
+            self.action_type,
+            self.actor_id,
+            target_tuple,
+            params_tuple,
+            self.source
+        ))
+
 
 class FreeCivTile(BaseModel):
     """Represents a single tile on the FreeCiv map."""
@@ -914,7 +981,7 @@ class FreeCivPlayer(BaseModel):
     player_id: int = Field(..., ge=0, le=MAX_PLAYER_ID)
     name: str = Field(..., min_length=1, max_length=50)
     nation: str = Field(..., min_length=1, max_length=30)
-    score: int = Field(..., ge=0)
+    score: int  # Allow -1 for pre-game phase (FreeCiv sentinel value)
     gold: int = Field(..., ge=0)
     techs: List[str] = Field(default_factory=list)
     government: Optional[str] = Field(None, max_length=20)
@@ -935,6 +1002,20 @@ class FreeCivPlayer(BaseModel):
     def validate_techs(cls, v):
         if len(v) > 50:  # Reasonable limit for tech names
             raise ValueError(f"Tech name too long: {v}")
+        return v
+
+    @validator("score")
+    def validate_score(cls, v):
+        """Validate score - allow -1 for pre-game phase, but reject other negatives.
+
+        FreeCiv sends score=-1 as a sentinel value during pre-game phase (nation
+        selection, ready phase) before the game officially starts. Once gameplay
+        begins, scores become non-negative integers reflecting civilization progress.
+        """
+        if v < -1:
+            raise ValueError(
+                f"Score must be >= -1 (got {v}). FreeCiv uses -1 for pre-game phase."
+            )
         return v
 
     @validator("diplomatic_relations")
@@ -976,7 +1057,7 @@ class FreeCivUnit(BaseModel):
     orders: List[str] = Field(default_factory=list)
     available_actions: List[FreeCivAction] = Field(default_factory=list)
     fortified: bool = False
-    activity: Optional[str] = None  # "exploring", "building_road", etc.
+    activity: Optional[str] = None  # "exploring", "building_road", etc. (accepts int from server)
     fuel: int = Field(-1, ge=-1)  # -1 for unlimited, 0+ for air/naval units
     transport_id: Optional[int] = Field(None, ge=0, le=MAX_UNIT_ID)
     cargo_ids: List[int] = Field(default_factory=list)
@@ -984,6 +1065,26 @@ class FreeCivUnit(BaseModel):
     class Config:
         validate_assignment = True
         extra = "forbid"
+
+    @validator("activity", pre=True)
+    def validate_activity(cls, v):
+        """Convert FreeCiv activity integers to appropriate string/None values.
+
+        FreeCiv sends activity as an integer code (e.g., 0 for idle/no activity).
+        Convert 0 to None, and other integers to string representations.
+        """
+        if v is None:
+            return None
+        if isinstance(v, int):
+            # Activity code 0 means no activity/idle
+            if v == 0:
+                return None
+            # For now, convert other activity codes to strings
+            # TODO: Add mapping for activity codes to descriptive names
+            return str(v)
+        if isinstance(v, str):
+            return v
+        raise ValueError(f"Activity must be string, int, or None, got {type(v)}")
 
     @validator("position")
     def validate_position(cls, v):
@@ -1131,7 +1232,15 @@ class FreeCivState(_GameStateBase):
                 current_player_raw, MAX_PLAYER_ID, "current_player"
             )
         else:
-            self._current_player_id = -1
+            # Fallback: Use player_id from top-level state if available
+            # (FreeCiv proxy may send player_id at top level instead of game.current_player)
+            current_player_raw = raw_state.get("player_id", -1)
+            if current_player_raw != -1:
+                self._current_player_id = _safe_int_conversion(
+                    current_player_raw, MAX_PLAYER_ID, "player_id"
+                )
+            else:
+                self._current_player_id = -1
 
         self.map = self._parse_map(raw_state.get("map", {}))
         self.players = self._parse_players(raw_state.get("players", []))
@@ -1314,12 +1423,16 @@ class FreeCivState(_GameStateBase):
                     transport_id, MAX_UNIT_ID, f"transport_id for unit {unit_id}"
                 )
 
+            # Ensure unit type is always a string (proxy may send integer type IDs)
+            unit_type_raw = udata.get("type", "unknown")
+            unit_type_str = str(unit_type_raw) if unit_type_raw is not None else "unknown"
+
             units[unit_id] = FreeCivUnit(
                 unit_id=unit_id,
                 owner=_safe_int_conversion(
                     udata.get("owner"), MAX_PLAYER_ID, f"owner for unit {unit_id}"
                 ),
-                kind=str(udata.get("type", "unknown")),
+                kind=unit_type_str,
                 position=position,
                 hp=_safe_int_conversion(
                     udata.get("hp", 0), 1000, f"hp for unit {unit_id}"
@@ -1446,13 +1559,24 @@ class FreeCivState(_GameStateBase):
         self, actor_id: int, action_data: Mapping[str, Any], source: str
     ) -> FreeCivAction:
         action_type = str(action_data.get("type", "unknown"))
-        target_raw = action_data.get("target") or action_data.get("target_unit")
-        if isinstance(target_raw, Mapping):
-            target = {key: value for key, value in target_raw.items()}
-        elif target_raw is None:
-            target = None
+
+        # Special handling for tech_research which uses 'tech_name' field instead of 'target'
+        if action_type == "tech_research":
+            tech_name = action_data.get("tech_name")
+            if tech_name:
+                target = {"value": tech_name}
+            else:
+                target = None
         else:
-            target = {"id": target_raw}
+            # Standard target extraction for other action types
+            target_raw = action_data.get("target") or action_data.get("target_unit")
+            if isinstance(target_raw, Mapping):
+                target = {key: value for key, value in target_raw.items()}
+            elif target_raw is None:
+                target = None
+            else:
+                target = {"id": target_raw}
+
         parameters = dict(action_data.get("parameters", {}))
         return FreeCivAction(
             action_type=action_type,
@@ -1460,6 +1584,89 @@ class FreeCivState(_GameStateBase):
             target=target,
             parameters=parameters,
             source=source,
+        )
+
+    def _parse_proxy_action(
+        self, action_data: Mapping[str, Any], actor_id: int
+    ) -> FreeCivAction:
+        """Convert proxy's action format to FreeCivAction.
+
+        Handles proxy-specific formats including:
+        - dest_x/dest_y for movement actions
+        - priority field for confidence scoring
+        - Multiple ID field variations (unit_id, city_id, actor_id)
+
+        Args:
+            action_data: Raw action dict from proxy's legal_actions list
+            actor_id: ID of the unit or city performing the action
+
+        Returns:
+            FreeCivAction object
+
+        Raises:
+            ValueError: If action data is malformed or missing required fields
+        """
+        # Get action type
+        action_type = str(action_data.get("type", "unknown"))
+
+        # Handle multiple target formats
+        target = None
+
+        # Format 1: Explicit target dict
+        if "target" in action_data:
+            target_raw = action_data["target"]
+            if isinstance(target_raw, Mapping):
+                target = {key: value for key, value in target_raw.items()}
+            elif target_raw is not None:
+                target = {"id": target_raw}
+
+        # Format 2: dest_x/dest_y (common for movement actions)
+        elif "dest_x" in action_data and "dest_y" in action_data:
+            target = {"x": action_data["dest_x"], "y": action_data["dest_y"]}
+
+        # Format 3: target_unit (for attacks)
+        elif "target_unit" in action_data:
+            target = {"id": action_data["target_unit"]}
+
+        # Format 4: tech_name (for tech_research actions)
+        elif "tech_name" in action_data:
+            target = {"value": action_data["tech_name"]}
+
+        # Map priority to confidence score
+        confidence = action_data.get("confidence", 1.0)
+        if "priority" in action_data:
+            priority_map = {"high": 0.9, "medium": 0.7, "low": 0.5}
+            confidence = priority_map.get(action_data["priority"], 0.7)
+
+        # Extract parameters
+        parameters = dict(action_data.get("parameters", {}))
+
+        # Add additional fields from proxy format
+        if "production_type" in action_data:
+            parameters["production_type"] = action_data["production_type"]
+        # Note: tech_name is extracted into target field above (Format 4)
+        if "description" in action_data:
+            parameters["description"] = action_data["description"]
+
+        # Determine source type based on action type and actor_id
+        if action_type.startswith(('tech_', 'diplomacy_')):
+            source = "player"
+        else:
+            # Check if it's a unit or city
+            source = "unit"
+            for city in self.cities.values():
+                if city.city_id == actor_id:
+                    source = "city"
+                    break
+
+        return FreeCivAction(
+            action_type=action_type,
+            actor_id=actor_id,
+            target=target,
+            parameters=parameters,
+            source=source,
+            confidence=confidence,
+            parse_method="proxy_flat_list",
         )
 
     # ------------------------------------------------------------------
@@ -1549,16 +1756,113 @@ class FreeCivState(_GameStateBase):
     # Adapter functionality
     # ------------------------------------------------------------------
     def get_legal_actions(self, player_id: int) -> List[FreeCivAction]:
+        """Get all legal actions for a player.
+
+        Uses pre-computed flat action list from proxy's legal_actions field.
+        This field is populated by rule-based action generation (~80% accuracy).
+
+        For 100% accuracy via FreeCiv protocol, see TICKET_PROTOCOL_BASED_ACTIONS.md.
+
+        Args:
+            player_id: Player ID to get actions for
+
+        Returns:
+            List of FreeCivAction objects for the player
+        """
         if player_id not in self.players:
             return []
+
+        # Check cache first
+        cache_key = (player_id, self._cache_version)
+        cached = self._action_cache.get(cache_key)
+        if cached is not None:
+            return [action.model_copy() for action in cached]
+
+        # Get flat action list from proxy (sent in state_update message)
+        raw_actions = self._raw_state.get('legal_actions', [])
+
+        if not raw_actions:
+            # Detailed diagnostic logging to understand why no actions are available
+            units_data = self._raw_state.get('units', [])
+            cities_data = self._raw_state.get('cities', [])
+            players_data = self._raw_state.get('players', [])
+            game_data = self._raw_state.get('game', {})
+
+            logger.error(
+                f"No legal_actions in state for player {player_id}!\n"
+                f"State keys: {list(self._raw_state.keys())}\n"
+                f"Units count: {len(units_data)}\n"
+                f"Cities count: {len(cities_data)}\n"
+                f"Players count: {len(players_data)}\n"
+                f"Game phase: {game_data.get('phase', 'unknown')}\n"
+                f"Turn: {self._raw_state.get('turn', 'unknown')}\n"
+            )
+
+            # Sample first few items if they exist
+            if units_data:
+                logger.debug(f"Sample units: {units_data[:2]}")
+            if cities_data:
+                logger.debug(f"Sample cities: {cities_data[:2]}")
+
+            # Check if state has minimal required data
+            if not units_data and not cities_data:
+                logger.error(
+                    f"⚠️ CRITICAL: Game state appears uninitialized - no units or cities!\n"
+                    f"This suggests the game hasn't started yet or nation assignment failed."
+                )
+
+            return []
+
+        # Build ownership lookup for filtering
+        player_unit_ids = {
+            u.unit_id for u in self.units.values() if u.owner == player_id
+        }
+        player_city_ids = {
+            c.city_id for c in self.cities.values() if c.owner == player_id
+        }
+
+        # Parse and filter actions
         actions: List[FreeCivAction] = []
-        for unit in self.units.values():
-            if unit.owner == player_id:
-                actions.extend(unit.available_actions)
-        for city in self.cities.values():
-            if city.owner == player_id:
-                actions.extend(city.available_actions)
-        # Deduplicate actions by type/target to avoid duplicates in fixtures.
+        for action_data in raw_actions:
+            if not isinstance(action_data, dict):
+                continue
+
+            try:
+                # Determine actor ID (handle multiple field names from proxy)
+                actor_id = (
+                    action_data.get('actor_id')
+                    or action_data.get('unit_id')
+                    or action_data.get('city_id')
+                )
+
+                # Check if this is a player-level action (tech_research, diplomacy, etc.)
+                action_type = action_data.get('type', '')
+                is_player_action = action_type.startswith(('tech_', 'diplomacy_'))
+
+                if actor_id is None:
+                    if is_player_action:
+                        # Player-level actions use player_id as actor_id
+                        actor_id = player_id
+                    else:
+                        logger.debug(f"Action missing actor ID: {action_data}")
+                        continue
+
+                # Filter by ownership - only include actions for this player's units/cities/player
+                if not is_player_action and (
+                    actor_id not in player_unit_ids
+                    and actor_id not in player_city_ids
+                ):
+                    continue
+
+                # Parse proxy action format
+                action = self._parse_proxy_action(action_data, actor_id)
+                actions.append(action)
+
+            except Exception as e:
+                logger.warning(f"Failed to parse action {action_data}: {e}")
+                continue
+
+        # Deduplicate actions by type/actor/target
         deduped: Dict[str, FreeCivAction] = {}
         for action in actions:
             key = _safe_json_dumps(
@@ -1569,9 +1873,12 @@ class FreeCivState(_GameStateBase):
                 }
             )
             deduped[key] = action
+
         result = list(deduped.values())
-        cache_key = (player_id, self._cache_version)
+
+        # Cache results
         self._action_cache.set(cache_key, result)
+
         return [action.model_copy() for action in result]
 
     def get_prioritized_legal_actions(

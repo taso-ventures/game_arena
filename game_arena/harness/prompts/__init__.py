@@ -15,5 +15,6 @@
 """FreeCiv prompt builder for enhanced prompt generation."""
 
 from game_arena.harness.prompts.freeciv_prompts import FreeCivPromptBuilder
+from game_arena.harness.prompt_templates import PromptTemplate
 
-__all__ = ["FreeCivPromptBuilder"]
+__all__ = ["FreeCivPromptBuilder", "PromptTemplate"]
