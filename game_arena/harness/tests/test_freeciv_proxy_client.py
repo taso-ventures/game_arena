@@ -51,6 +51,26 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
           await self.client.disconnect()
       await self.mock_server.stop()
 
+  async def _process_incoming_message(self, client):
+      """Helper to manually trigger message processing in tests.
+
+      In production, message processing is handled automatically by the
+      background message loop in ConnectionManager. For testing purposes,
+      we manually receive and process messages to verify handler behavior.
+
+      Args:
+          client: The FreeCivProxyClient instance to process messages for.
+
+      Returns:
+          bool: True if a message was processed, False otherwise.
+      """
+      incoming_message = await client.connection_manager.receive_message()
+      if incoming_message:
+          data = json.loads(incoming_message)
+          await client.message_handler.handle_message(data)
+          return True
+      return False
+
   async def test_connection_establishment(self):
       """Test basic connection establishment."""
       # Test connection
@@ -170,15 +190,8 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       # Send ping to client
       await self.mock_server.send_to_client("test_agent", json.dumps(conn_ping_message))
 
-      # Manually trigger message processing by receiving the message
-      # In a real scenario, this would be handled by a background message loop
-      # or when the client calls _wait_for_response during an operation
-      incoming_message = await self.client.connection_manager.receive_message()
-      if incoming_message:
-          import json as json_module
-          data = json_module.loads(incoming_message)
-          # Process the conn_ping message through the handler
-          await self.client.message_handler.handle_message(data)
+      # Manually trigger message processing using helper method
+      await self._process_incoming_message(self.client)
 
       # Wait for pong to be sent and received by mock server
       await asyncio.sleep(0.2)
@@ -199,9 +212,9 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       # Create a MessageHandler without a client reference
       handler = MessageHandler(client=None)
 
+      # PACKET_CONN_PING is an empty packet per packets.def
       conn_ping_message = {
-          "type": "conn_ping",
-          "timestamp": int(time.time())
+          "type": "conn_ping"
       }
 
       # Should not raise an exception, just log a warning
@@ -221,9 +234,9 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       await self.client.disconnect()
 
       # Simulate civserver sending PACKET_CONN_PING while disconnected
+      # PACKET_CONN_PING is an empty packet per packets.def
       conn_ping_message = {
-          "type": "conn_ping",
-          "timestamp": int(time.time())
+          "type": "conn_ping"
       }
 
       # Try to handle ping when disconnected - should be ignored
@@ -236,6 +249,88 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       messages = self.mock_server.get_recorded_messages()
       pong_messages = [msg for msg in messages if msg.get("type") == "conn_pong"]
       self.assertEqual(len(pong_messages), 0, "No pong should be sent when disconnected")
+
+  async def test_conn_ping_concurrent_handling(self):
+      """Test handling multiple PACKET_CONN_PING messages concurrently.
+
+      Verifies that the handler can process multiple pings in rapid succession
+      without race conditions or dropped responses.
+      """
+      await self.client.connect()
+      self.mock_server.clear_recorded_messages()
+
+      # Send multiple pings rapidly
+      num_pings = 5
+      conn_ping_message = {"type": "conn_ping"}
+
+      for i in range(num_pings):
+          await self.mock_server.send_to_client("test_agent", json.dumps(conn_ping_message))
+
+      # Process all incoming ping messages
+      for i in range(num_pings):
+          await self._process_incoming_message(self.client)
+
+      # Wait for all pongs to be sent and received
+      await asyncio.sleep(0.3)
+
+      # Verify we got a pong for each ping
+      messages = self.mock_server.get_recorded_messages()
+      pong_messages = [msg for msg in messages if msg.get("type") == "conn_pong"]
+      self.assertEqual(
+          len(pong_messages),
+          num_pings,
+          f"Should receive {num_pings} pongs for {num_pings} pings"
+      )
+
+      # Verify all pongs are correctly formatted (empty packets)
+      for pong in pong_messages:
+          self.assertEqual(pong["type"], "conn_pong")
+          self.assertEqual(len(pong), 1, "Each pong should be an empty packet")
+
+  async def test_conn_ping_send_failure(self):
+      """Test PACKET_CONN_PING handler when sending pong fails.
+
+      Verifies graceful error handling when send_message() raises an exception,
+      such as during network failures or WebSocket errors.
+      """
+      await self.client.connect()
+      self.mock_server.clear_recorded_messages()
+
+      # Mock send_message to raise an exception
+      original_send = self.client.connection_manager.send_message
+      send_call_count = 0
+
+      async def mock_send_with_error(message):
+          nonlocal send_call_count
+          send_call_count += 1
+          raise Exception("Simulated network error")
+
+      with patch.object(
+          self.client.connection_manager,
+          'send_message',
+          side_effect=mock_send_with_error
+      ):
+          # Send ping
+          conn_ping_message = {"type": "conn_ping"}
+          await self.mock_server.send_to_client("test_agent", json.dumps(conn_ping_message))
+
+          # Process ping - should not raise exception
+          await self._process_incoming_message(self.client)
+
+          # Wait briefly
+          await asyncio.sleep(0.1)
+
+          # Verify send_message was called (handler attempted to send)
+          self.assertEqual(send_call_count, 1, "Handler should attempt to send pong")
+
+      # Verify no pong was recorded (since send failed)
+      messages = self.mock_server.get_recorded_messages()
+      pong_messages = [msg for msg in messages if msg.get("type") == "conn_pong"]
+      self.assertEqual(
+          len(pong_messages),
+          0,
+          "No pong should be recorded when send fails"
+      )
 
   async def test_disconnection_handling(self):
       """Test graceful disconnection."""
