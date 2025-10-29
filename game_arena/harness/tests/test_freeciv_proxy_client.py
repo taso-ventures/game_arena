@@ -152,16 +152,19 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       self.assertTrue(any(msg.get("type") == "ping" for msg in messages))
 
   async def test_conn_ping_pong_handler(self):
-      """Test PACKET_CONN_PING/PONG handler to prevent civserver disconnects."""
+      """Test PACKET_CONN_PING/PONG handler to prevent civserver disconnects.
+
+      Per FreeCiv packets.def:1300-1306, both PACKET_CONN_PING (88; sc) and
+      PACKET_CONN_PONG (89; cs) are empty packets with no fields.
+      """
       await self.client.connect()
 
       # Clear any authentication messages from connection
       self.mock_server.clear_recorded_messages()
 
-      # Simulate civserver sending PACKET_CONN_PING
+      # Simulate civserver sending PACKET_CONN_PING (empty packet per packets.def)
       conn_ping_message = {
-          "type": "conn_ping",
-          "timestamp": int(time.time())
+          "type": "conn_ping"
       }
 
       # Send ping to client
@@ -185,11 +188,11 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       pong_messages = [msg for msg in messages if msg.get("type") == "conn_pong"]
       self.assertGreater(len(pong_messages), 0, "Client should respond to conn_ping with conn_pong")
 
-      # Verify pong message structure
+      # Verify pong message structure - should be empty packet per packets.def
       pong_msg = pong_messages[-1]
       self.assertEqual(pong_msg["type"], "conn_pong")
-      self.assertIn("timestamp", pong_msg)
-      self.assertIsInstance(pong_msg["timestamp"], int, "Timestamp should be an integer")
+      # PACKET_CONN_PONG has no fields per packets.def - verify it's empty
+      self.assertEqual(len(pong_msg), 1, "PACKET_CONN_PONG should only have 'type' field (empty packet)")
 
   async def test_conn_ping_with_no_client(self):
       """Test PACKET_CONN_PING handler when client reference is None."""

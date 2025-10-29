@@ -123,8 +123,8 @@ class PacketID(Enum):
 
   UNIT_ORDERS = 31  # Send unit movement/action orders
   CITY_CHANGE_PRODUCTION = 85  # Change city production target
-  PACKET_CONN_PING = 88  # Connection keepalive ping from server
-  PACKET_CONN_PONG = 89  # Connection keepalive pong response from client
+  PACKET_CONN_PING = 88  # Empty keepalive packet: server→client (sc), no fields per packets.def:1300
+  PACKET_CONN_PONG = 89  # Empty keepalive response: client→server (cs), no fields per packets.def:1305
   GENERIC = 0  # Generic/unknown packet type
 
 
@@ -1795,14 +1795,19 @@ class MessageHandler:
       """Handle PACKET_CONN_PING from civserver and respond with PACKET_CONN_PONG.
 
       This is critical for keeping the connection alive. The civserver sends
-      periodic ping packets, and if we don't respond with pong, it will
-      disconnect the client.
+      periodic ping packets (PACKET_CONN_PING = 88; sc), and if we don't
+      respond with pong (PACKET_CONN_PONG = 89; cs), it will disconnect the client.
+
+      Per FreeCiv packets.def:1300-1306, both packets are empty (no fields):
+        PACKET_CONN_PING = 88; sc       (server → client)
+        end
+        PACKET_CONN_PONG = 89; cs       (client → server)
+        end
 
       Args:
           message: Ping message from civserver with structure:
               {
-                  "type": "conn_ping",
-                  "timestamp": <int>
+                  "type": "conn_ping"
               }
       """
       logger.debug("Received PACKET_CONN_PING, sending PACKET_CONN_PONG response")
@@ -1817,10 +1822,9 @@ class MessageHandler:
           logger.warning(f"Cannot send PACKET_CONN_PONG: connection state is {self.client.connection_manager.state}")
           return
 
-      # Create pong response with integer timestamp to match heartbeat format
+      # Create pong response - empty packet per packets.def specification
       pong_message = {
-          "type": "conn_pong",
-          "timestamp": int(time.time()),
+          "type": "conn_pong"
       }
 
       # Send pong response back to server
