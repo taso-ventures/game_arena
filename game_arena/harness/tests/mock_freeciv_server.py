@@ -187,12 +187,17 @@ class MockFreeCivServer:
             "connected_at": time.time(),
         }
 
+        # Match the expected authentication response structure from FreeCiv3D
         response = {
-            "type": "llm_connect_response",
-            "status": "ready",
-            "player_id": 1,
-            "game_id": game_id,
-            "capabilities": ["state_query", "action", "ping"],
+            "type": "llm_connect",
+            "data": {
+                "type": "auth_success",
+                "success": True,
+                "player_id": 1,
+                "game_id": game_id,
+                "civserver_port": 5556,
+                "capabilities": ["state_query", "action", "ping"],
+            }
         }
         await websocket.send(json.dumps(response))
 
@@ -269,6 +274,24 @@ class MockFreeCivServer:
             websocket = self.agent_sessions[agent_id]["websocket"]
             await websocket.close(code=1000, reason="Simulated disconnect")
             del self.agent_sessions[agent_id]
+
+    async def send_to_client(self, agent_id: str, message: str) -> None:
+        """Send a message to a specific connected client.
+
+        Args:
+            agent_id: Agent identifier
+            message: Message to send (JSON string)
+        """
+        if agent_id in self.agent_sessions:
+            websocket = self.agent_sessions[agent_id]["websocket"]
+            try:
+                await websocket.send(message)
+                logger.debug(f"Sent message to agent {agent_id}: {message[:100]}")
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(f"Failed to send to {agent_id}: connection closed")
+                del self.agent_sessions[agent_id]
+        else:
+            logger.warning(f"Agent {agent_id} not found in active sessions")
 
     async def broadcast_turn_notification(self) -> None:
         """Broadcast turn change to all connected agents."""
