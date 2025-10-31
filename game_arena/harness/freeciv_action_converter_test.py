@@ -124,6 +124,24 @@ class TestFreeCivActionConverter(unittest.TestCase):
         self.assertEqual(parsed_action.source, original_action.source)
         self.assertEqual(parsed_action.target, original_action.target)
 
+    def test_parse_bare_actions(self):
+        """Test parsing bare action strings without parameters."""
+        # Test end_turn
+        end_turn_action = self.converter.string_to_action("end_turn")
+        self.assertEqual(end_turn_action.action_type, "end_turn")
+        self.assertEqual(end_turn_action.source, "player")
+        self.assertIsNone(end_turn_action.target)
+
+        # Test pass
+        pass_action = self.converter.string_to_action("pass")
+        self.assertEqual(pass_action.action_type, "pass")
+        self.assertEqual(pass_action.source, "player")
+
+        # Test skip
+        skip_action = self.converter.string_to_action("skip")
+        self.assertEqual(skip_action.action_type, "skip")
+        self.assertEqual(skip_action.source, "player")
+
     def test_parse_existing_actions_still_work(self):
         """Test that existing action parsers still work correctly."""
         # Test unit_move
@@ -463,6 +481,276 @@ class TestProxyActionConversion(unittest.TestCase):
         self.assertEqual(packet["action_type"], "tech_research")
         self.assertEqual(packet["actor_id"], 0)
         self.assertEqual(packet["target"], {"value": "Mathematics"})
+
+
+class TestJSONActionParsing(unittest.TestCase):
+    """Test cases for JSON action parsing."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.converter = FreeCivActionConverter()
+
+    def test_parse_json_tech_research(self):
+        """Test parsing tech_research action from JSON format."""
+        json_string = '{"type": "tech_research", "tech_name": "alphabet"}'
+
+        action = self.converter.string_to_action(json_string)
+
+        self.assertEqual(action.action_type, "tech_research")
+        self.assertEqual(action.actor_id, 0)
+        self.assertEqual(action.source, "player")
+        self.assertEqual(action.target, {"value": "alphabet"})
+        self.assertEqual(action.parse_method, "json")
+
+    def test_parse_json_unit_move(self):
+        """Test parsing unit_move action from JSON format."""
+        json_string = '{"type": "unit_move", "unit_id": 42, "dest_x": 15, "dest_y": 20}'
+
+        action = self.converter.string_to_action(json_string)
+
+        self.assertEqual(action.action_type, "unit_move")
+        self.assertEqual(action.actor_id, 42)
+        self.assertEqual(action.source, "unit")
+        self.assertEqual(action.target, {"x": 15, "y": 20})
+        self.assertEqual(action.parse_method, "json")
+
+    def test_parse_json_unit_build_city(self):
+        """Test parsing unit_build_city action from JSON format."""
+        json_string = '{"type": "unit_build_city", "unit_id": 101}'
+
+        action = self.converter.string_to_action(json_string)
+
+        self.assertEqual(action.action_type, "unit_build_city")
+        self.assertEqual(action.actor_id, 101)
+        self.assertEqual(action.source, "unit")
+        self.assertEqual(action.target, {})
+        self.assertEqual(action.parse_method, "json")
+
+    def test_parse_json_city_production(self):
+        """Test parsing city_production action from JSON format."""
+        json_string = '{"type": "city_production", "city_id": 1, "production_type": "warrior"}'
+
+        action = self.converter.string_to_action(json_string)
+
+        self.assertEqual(action.action_type, "city_production")
+        self.assertEqual(action.actor_id, 1)
+        self.assertEqual(action.source, "city")
+        self.assertEqual(action.target, {"value": "warrior"})
+        self.assertEqual(action.parse_method, "json")
+
+    def test_parse_json_unit_fortify(self):
+        """Test parsing unit_fortify action from JSON format."""
+        json_string = '{"type": "unit_fortify", "unit_id": 42}'
+
+        action = self.converter.string_to_action(json_string)
+
+        self.assertEqual(action.action_type, "unit_fortify")
+        self.assertEqual(action.actor_id, 42)
+        self.assertEqual(action.source, "unit")
+        self.assertEqual(action.target, {})
+        self.assertEqual(action.parse_method, "json")
+
+    def test_parse_json_end_turn(self):
+        """Test parsing end_turn action from JSON format."""
+        json_string = '{"type": "end_turn"}'
+
+        action = self.converter.string_to_action(json_string)
+
+        self.assertEqual(action.action_type, "end_turn")
+        self.assertEqual(action.actor_id, 0)
+        self.assertEqual(action.source, "player")
+        self.assertEqual(action.target, {})
+        self.assertEqual(action.parse_method, "json")
+
+    def test_parse_json_with_markdown_wrapper(self):
+        """Test parsing JSON wrapped in markdown code block."""
+        json_string = '''```json
+{
+  "type": "unit_build_city",
+  "unit_id": 101
+}
+```'''
+
+        action = self.converter.string_to_action(json_string)
+
+        self.assertEqual(action.action_type, "unit_build_city")
+        self.assertEqual(action.actor_id, 101)
+        self.assertEqual(action.source, "unit")
+        self.assertEqual(action.parse_method, "json")
+
+    def test_parse_json_unit_explore(self):
+        """Test parsing unit_explore action from JSON format."""
+        json_string = '{"type": "unit_explore", "unit_id": 103}'
+
+        action = self.converter.string_to_action(json_string)
+
+        self.assertEqual(action.action_type, "unit_explore")
+        self.assertEqual(action.actor_id, 103)
+        self.assertEqual(action.source, "unit")
+        self.assertEqual(action.target, {})
+
+    def test_parse_json_unit_attack(self):
+        """Test parsing unit_attack action from JSON format."""
+        json_string = '{"type": "unit_attack", "unit_id": 42, "target_unit_id": 202}'
+
+        action = self.converter.string_to_action(json_string)
+
+        self.assertEqual(action.action_type, "unit_attack")
+        self.assertEqual(action.actor_id, 42)
+        self.assertEqual(action.source, "unit")
+        self.assertEqual(action.target, {"id": 202})
+
+    def test_parse_json_with_text_prefix(self):
+        """Test parsing JSON with text prefix (from rethinking system)."""
+        # This format appears when the rethinking system adds context
+        prefixed_json = 'FINAL DECISION: {"type": "unit_build_city", "unit_id": 101} because founding our first city immediately aligns with our expansion objective'
+
+        action = self.converter.string_to_action(prefixed_json)
+
+        self.assertEqual(action.action_type, "unit_build_city")
+        self.assertEqual(action.actor_id, 101)
+        self.assertEqual(action.source, "unit")
+        self.assertEqual(action.parse_method, "json")
+
+    def test_parse_json_with_text_suffix(self):
+        """Test parsing JSON with explanatory text after it."""
+        # Some LLMs add explanation after the JSON
+        suffixed_json = '{"type": "unit_move", "unit_id": 42, "dest_x": 15, "dest_y": 20} - Moving unit to strategic position'
+
+        action = self.converter.string_to_action(suffixed_json)
+
+        self.assertEqual(action.action_type, "unit_move")
+        self.assertEqual(action.actor_id, 42)
+        self.assertEqual(action.source, "unit")
+        self.assertEqual(action.target, {"x": 15, "y": 20})
+        self.assertEqual(action.parse_method, "json")
+
+    def test_json_parsing_rejects_non_json(self):
+        """Test that non-JSON strings are rejected."""
+        canonical_string = "unit_explore_warrior(101)"
+
+        with self.assertRaises(ValueError) as context:
+            self.converter.string_to_action(canonical_string)
+
+        self.assertIn("invalid json", str(context.exception).lower())
+
+    def test_json_parsing_invalid_format(self):
+        """Test that invalid JSON raises appropriate error."""
+        invalid_json = '{"type": "unit_move", "unit_id": 42'  # Missing closing brace
+
+        # Should fail to parse as JSON and fail to parse as canonical
+        with self.assertRaises(ValueError):
+            self.converter.string_to_action(invalid_json)
+
+    def test_json_parsing_missing_type(self):
+        """Test that JSON without 'type' field raises error."""
+        invalid_json = '{"unit_id": 42, "dest_x": 10, "dest_y": 20}'
+
+        with self.assertRaises(ValueError) as context:
+            self.converter.string_to_action(invalid_json)
+
+        # Error can be either "JSON action must have 'type' field" or generic parsing error
+        error_msg = str(context.exception).lower()
+        self.assertTrue("type" in error_msg or "invalid action string" in error_msg)
+
+
+class TestActorIdToPlayerIdMapping(unittest.TestCase):
+    """Test cases for _actor_id_to_player_id method with dict-based state."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.converter = FreeCivActionConverter()
+
+    def test_actor_id_to_player_id_with_dict_units(self):
+        """Test that _actor_id_to_player_id correctly iterates over dict.values() for units."""
+        from unittest.mock import Mock
+
+        # Create a mock state with dict-based units structure
+        mock_state = Mock()
+
+        # Create mock unit objects with proper attributes
+        mock_unit_101 = Mock()
+        mock_unit_101.id = 101
+        mock_unit_101.owner = 0
+
+        mock_unit_102 = Mock()
+        mock_unit_102.id = 102
+        mock_unit_102.owner = 1
+
+        # Units is a dict with integer keys mapping to unit objects
+        mock_state.units = {
+            101: mock_unit_101,
+            102: mock_unit_102,
+        }
+        mock_state.cities = {}
+
+        # Test finding player ID for unit 101
+        player_id = self.converter._actor_id_to_player_id(101, mock_state)
+        self.assertEqual(player_id, 0)
+
+        # Test finding player ID for unit 102
+        player_id = self.converter._actor_id_to_player_id(102, mock_state)
+        self.assertEqual(player_id, 1)
+
+        # Test non-existent unit
+        player_id = self.converter._actor_id_to_player_id(999, mock_state)
+        self.assertIsNone(player_id)
+
+    def test_actor_id_to_player_id_with_dict_cities(self):
+        """Test that _actor_id_to_player_id correctly iterates over dict.values() for cities."""
+        from unittest.mock import Mock
+
+        # Create a mock state with dict-based cities structure
+        mock_state = Mock()
+        mock_state.units = {}
+
+        # Create mock city objects with proper attributes
+        mock_city_301 = Mock()
+        mock_city_301.id = 301
+        mock_city_301.owner = 0
+
+        mock_city_302 = Mock()
+        mock_city_302.id = 302
+        mock_city_302.owner = 1
+
+        # Cities is a dict with integer keys mapping to city objects
+        mock_state.cities = {
+            301: mock_city_301,
+            302: mock_city_302,
+        }
+
+        # Test finding player ID for city 301
+        player_id = self.converter._actor_id_to_player_id(301, mock_state)
+        self.assertEqual(player_id, 0)
+
+        # Test finding player ID for city 302
+        player_id = self.converter._actor_id_to_player_id(302, mock_state)
+        self.assertEqual(player_id, 1)
+
+        # Test non-existent city
+        player_id = self.converter._actor_id_to_player_id(999, mock_state)
+        self.assertIsNone(player_id)
+
+    def test_actor_id_to_player_id_with_dict_format_units(self):
+        """Test that _actor_id_to_player_id works with dict-format unit objects."""
+        from unittest.mock import Mock
+
+        # Create a mock state with dict-formatted units (some implementations use dicts)
+        mock_state = Mock()
+
+        # Units as dicts in a dict container
+        mock_state.units = {
+            101: {'id': 101, 'owner': 0, 'kind': 'settlers'},
+            102: {'id': 102, 'owner': 1, 'kind': 'warriors'},
+        }
+        mock_state.cities = {}
+
+        # Test finding player ID for dict-format unit
+        player_id = self.converter._actor_id_to_player_id(101, mock_state)
+        self.assertEqual(player_id, 0)
+
+        player_id = self.converter._actor_id_to_player_id(102, mock_state)
+        self.assertEqual(player_id, 1)
 
 
 if __name__ == "__main__":

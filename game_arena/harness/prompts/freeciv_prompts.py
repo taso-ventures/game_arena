@@ -860,6 +860,11 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         compressed_obs = self._compress_for_model(obs_dict, model_config)
 
         # Build strategic analysis components
+        # TODO(AGE-XXX): Use state.strategic_summary from FreeCiv3D when available
+        # FreeCiv3D's LLM Gateway provides pre-computed strategic analysis in llm_optimized format:
+        # - cities_count, units_count, tech_progress, military_strength
+        # This can replace or augment our local _build_strategic_summary() computation
+        # Check if compressed_obs contains 'strategic_summary' field before building locally
         strategic_summary = self._build_strategic_summary(compressed_obs, current_player_id)
         prioritized_actions = self._build_prioritized_actions(
             legal_actions, action_context=action_context
@@ -1064,22 +1069,26 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             priority = self._get_action_priority(action)
             action_groups[priority].append(action)
 
-        # Format prioritized actions with CANONICAL FORMAT for LLM to copy
+        # Format prioritized actions with JSON FORMAT for LLM to copy
         formatted_actions = []
         formatted_actions.append("\n" + "=" * 80)
         formatted_actions.append("RESPONSE FORMAT REQUIREMENTS")
         formatted_actions.append("=" * 80)
         formatted_actions.append("")
-        formatted_actions.append("⚠️  CRITICAL: Respond with ONLY the action string, nothing else!")
+        formatted_actions.append("⚠️  CRITICAL: Respond with ONLY a JSON object, nothing else!")
         formatted_actions.append("")
-        formatted_actions.append("✅ CORRECT format:")
-        formatted_actions.append("   unit_move_settlers(101)_to(2,3)")
+        formatted_actions.append("✅ CORRECT format examples:")
+        formatted_actions.append('   {"type": "unit_build_city", "unit_id": 101}')
+        formatted_actions.append('   {"type": "unit_move", "unit_id": 102, "dest_x": 15, "dest_y": 20}')
+        formatted_actions.append('   {"type": "tech_research", "tech_name": "alphabet"}')
+        formatted_actions.append('   {"type": "end_turn"}')
         formatted_actions.append("")
-        formatted_actions.append("❌ WRONG format (adds explanation):")
-        formatted_actions.append("   I will move my settlers: unit_move_settlers(101)_to(2,3)")
+        formatted_actions.append("❌ WRONG formats:")
+        formatted_actions.append("   unit_build_city_unit(101)  ← String format not supported")
+        formatted_actions.append("   I will build: {...}  ← Extra text not allowed")
         formatted_actions.append("")
-        formatted_actions.append("Copy EXACTLY one action string from the list below.")
-        formatted_actions.append("Do NOT add reasoning, explanations, or extra text.")
+        formatted_actions.append("Copy EXACTLY one JSON action from the list below.")
+        formatted_actions.append("Do NOT add reasoning, explanations, markdown, or extra text.")
         formatted_actions.append("=" * 80)
         formatted_actions.append("")
 
@@ -1115,12 +1124,12 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             priority_name = ActionPriority(priority).name.title().replace('_', ' ')
             formatted_actions.append(f"\n{priority_name} Priority:")
 
-            # Show top 10 actions per priority with full canonical format
+            # Show top 10 actions per priority in JSON format
             for i, action in enumerate(actions[:10], 1):
-                # Get canonical string that LLM should copy exactly
-                canonical = self._action_to_canonical_string(action)
+                # Get JSON representation that LLM should copy exactly
+                json_repr = self._action_to_json(action)
                 impact = self._assess_action_impact(action)
-                formatted_actions.append(f"{i}. {canonical}")
+                formatted_actions.append(f"{i}. {json_repr}")
                 formatted_actions.append(f"   Impact: {impact}")
 
         return "\n".join(formatted_actions)
@@ -1167,6 +1176,46 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             return "REQUIRED: Call this when you have no more valuable actions to take this turn. Both players must end_turn for the game to advance."
         else:
             return "Variable impact: Situation dependent"
+
+    def _action_to_json(self, action: FreeCivAction) -> str:
+        """Convert FreeCivAction to JSON string format for prompt display.
+
+        This generates a JSON representation that matches the format LLMs should
+        output when selecting an action. The JSON format is unambiguous, easy to
+        parse, and matches the structure of legal_actions from the gateway.
+
+        Args:
+            action: FreeCivAction to convert
+
+        Returns:
+            JSON string representation of the action
+        """
+        import json
+
+        # Build JSON dict with action-type-specific fields
+        json_dict = {"type": action.action_type}
+
+        # Add actor_id field based on source
+        if action.source == "unit":
+            json_dict["unit_id"] = action.actor_id
+        elif action.source == "city":
+            json_dict["city_id"] = action.actor_id
+        # Player-level actions (tech_research, end_turn) don't need actor_id
+
+        # Add target fields based on action type
+        if action.target:
+            if "x" in action.target and "y" in action.target:
+                # Movement action
+                json_dict["dest_x"] = action.target["x"]
+                json_dict["dest_y"] = action.target["y"]
+            elif "value" in action.target:
+                # Tech research or city production
+                if action.action_type == "tech_research":
+                    json_dict["tech_name"] = str(action.target["value"]).lower()
+                elif action.action_type == "city_production":
+                    json_dict["production_type"] = str(action.target["value"]).lower()
+
+        return json.dumps(json_dict)
 
     def _action_to_canonical_string(self, action: FreeCivAction) -> str:
         """Convert FreeCivAction to canonical string format for prompt display.

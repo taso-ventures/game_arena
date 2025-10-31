@@ -151,6 +151,13 @@ class FreeCivLLMAgent(
     self._error_telemetry: Optional[Dict[str, Any]] = None
     self._error_history: List[Dict[str, Any]] = []
 
+    # Turn state tracking (per handover doc requirements)
+    # These enable intelligent end_turn decisions without relying solely on LLM
+    self.current_turn = 1
+    self.actions_this_turn: List[FreeCivAction] = []
+    self.queries_without_action = 0
+    self.last_turn_units_exhausted = False
+
     absl_logging.info(
         "FreeCivLLMAgent initialized: model=%s, strategy=%s, rethinking=%s",
         model.model_name,
@@ -443,6 +450,10 @@ class FreeCivLLMAgent(
     Returns:
       Selected FreeCivAction
     """
+    # Extract player_id at function start to ensure consistency across all operations
+    # This prevents player context loss during rethinking and state operations
+    player_id = self._extract_player_id(observation)
+
     # Log available legal actions for debugging
     absl_logging.debug(
         "Generating action with %d legal options. Examples: %s",
@@ -451,6 +462,15 @@ class FreeCivLLMAgent(
     )
 
     # Build context-aware prompt with action context
+    # TODO(AGE-XXX): Integrate FreeCiv3D strategic guidance into action selection
+    # When state._raw_state contains these fields (from llm_optimized format):
+    # 1. immediate_priorities: Prioritize actions matching these suggestions
+    # 2. threats: Increase defensive action scores when threats detected
+    # 3. opportunities: Boost exploration/expansion actions for identified opportunities
+    # Example:
+    #   if 'immediate_priorities' in state._raw_state:
+    #       priorities = state._raw_state['immediate_priorities']
+    #       # Adjust action scoring based on priorities
     prompt = self._build_context_aware_prompt(
         observation, state, legal_actions, action_context=action_context
     )
@@ -500,10 +520,11 @@ class FreeCivLLMAgent(
         absl_logging.info("Illegal action generated, using rethinking sampler")
         try:
           # Create observation compatible with rethinking sampler
+          # CRITICAL: Pass player_id to action_to_int to prevent cross-player contamination
           rethink_observation = {
               "serializedGameAndState": observation.get("serializedGameAndState", ""),
-              "legalActions": [self.action_converter.action_to_int(action, state) for action in legal_actions],
-              "playerID": observation.get("playerID", 0)
+              "legalActions": [self.action_converter.action_to_int(action, state, player_id) for action in legal_actions],
+              "playerID": player_id
           }
 
           # Use rethinking sampler to get a valid action
@@ -576,43 +597,22 @@ class FreeCivLLMAgent(
     """Parse LLM response to FreeCivAction.
 
     Args:
-      response_text: Raw LLM response text
+      response_text: Raw LLM response text (expected to be JSON)
       legal_actions: List of legal actions for validation
 
     Returns:
       Parsed FreeCivAction
     """
-    from game_arena.harness import parsers
-
-    # Convert legal actions to string format for parser
-    legal_action_strings = [
-        self.action_converter.action_to_string(action)
-        for action in legal_actions
-    ]
-
-    # Create parser input
-    parser_input = parsers.TextParserInput(
-        text=response_text, legal_moves=legal_action_strings
-    )
-
-    # Parse using FreeCiv parser
-    parsed_action_string = self.action_parser.parse(parser_input)
-
-    if parsed_action_string:
-      # Validate canonical format before converting
-      if not self._is_valid_canonical_format(parsed_action_string):
-        absl_logging.warning(
-            "Parser returned potentially invalid format: %s",
-            parsed_action_string
-        )
-        absl_logging.debug("LLM response excerpt: %s", response_text[:300])
-
-      # Convert back to FreeCivAction
-      return self.action_converter.string_to_action(parsed_action_string)
-    else:
-      # IMPROVED: Strategy-aware fallback selection
+    # Try to parse JSON directly from the response
+    try:
+      action = self.action_converter.string_to_action(response_text)
+      absl_logging.debug("✅ Successfully parsed JSON action: %s", response_text[:200])
+      return action
+    except ValueError as e:
+      # JSON parsing failed - use fallback
       absl_logging.warning(
-          "⚠️  Parser failed on LLM response, using strategy-aware fallback (strategy=%s)",
+          "⚠️  JSON parsing failed: %s. Using strategy-aware fallback (strategy=%s)",
+          str(e)[:100],
           self.strategy
       )
       absl_logging.debug("Failed LLM response: %s", response_text[:500])
@@ -622,7 +622,7 @@ class FreeCivLLMAgent(
 
       absl_logging.info(
           "📋 Fallback selected: %s (type=%s) based on %s strategy",
-          self.action_converter.action_to_string(selected_fallback),
+          selected_fallback.action_type,
           selected_fallback.action_type,
           self.strategy
       )
@@ -783,7 +783,7 @@ class FreeCivLLMAgent(
     access to the full FreeCivAction object rather than just the integer.
 
     Args:
-      observation: Game observation
+      observation: Game observation (can be raw dict from get_state() or old observation format)
       proxy_client: WebSocket client for FreeCiv3D communication
       action_context: Optional context about turn actions. Example structure:
           {
@@ -798,11 +798,49 @@ class FreeCivLLMAgent(
     Returns:
       Selected FreeCivAction object
     """
-    # Synchronize state with FreeCiv3D server
-    state = await self.state_synchronizer.sync_state(proxy_client, observation)
+    # OPTIMIZATION: Skip expensive sync_state() if observation is already fresh
+    # When run_freeciv_game.py passes cached turn_state dict from get_state(),
+    # we can use it directly instead of querying server again (saves 50% of messages)
+    # IMPORTANT: Check must match FreeCivState validation requirements (game, map, players, units, cities)
+    if isinstance(observation, dict) and all(k in observation for k in ['game', 'map', 'players', 'units', 'cities']):
+      # observation is already a complete state dict from get_state()
+      # Use it directly to avoid duplicate state query
+      state = FreeCivState(observation)
+      absl_logging.debug("Using cached state from observation (skipped sync_state)")
+    else:
+      # Legacy path or incomplete observation: sync state from server
+      if isinstance(observation, dict):
+        missing = [k for k in ['game', 'map', 'players', 'units', 'cities'] if k not in observation]
+        absl_logging.debug(f"Synchronized state from server (observation incomplete, missing: {missing})")
+      else:
+        absl_logging.debug("Synchronized state from server (observation not a dict)")
+      state = await self.state_synchronizer.sync_state(proxy_client, observation)
 
     # Extract player ID
     player_id = self._extract_player_id(observation)
+
+    # NEW: Update turn state tracking (detects turn changes, resets counters)
+    self.on_state_update(observation)
+    self.queries_without_action += 1
+
+    # NEW: Check heuristic end_turn condition BEFORE calling LLM
+    # This provides fallback logic when units are exhausted, action limit approached,
+    # or agent is stuck without making progress
+    max_actions = action_context.get('max_actions', 20) if action_context else 20
+    if self.should_end_turn(state, player_id, max_actions):
+      end_turn_action = FreeCivAction(
+          action_type="end_turn",
+          actor_id=player_id,
+          target=None,
+          parameters={"turn": state.turn},  # Include turn number for PACKET_PLAYER_PHASE_DONE
+          source="player",
+          confidence=1.0,
+          parse_method="heuristic",
+          strategic_score=1.0  # High priority when heuristic decides
+      )
+      self.on_action_taken(end_turn_action)
+      self._record_action_in_memory(end_turn_action, observation, state)
+      return end_turn_action
 
     # Get legal actions
     legal_actions = state.get_legal_actions(player_id)
@@ -829,10 +867,13 @@ class FreeCivLLMAgent(
         )
         raise ValueError(f"No legal actions for player {player_id}")
 
-    # Generate action with context
+    # Generate action with context (LLM-based decision)
     selected_action = await self._generate_action_with_llm(
         observation, state, legal_actions, action_context=action_context
     )
+
+    # NEW: Record action in turn history
+    self.on_action_taken(selected_action)
 
     # Record in memory
     self._record_action_in_memory(selected_action, observation, state)
@@ -904,3 +945,110 @@ class FreeCivLLMAgent(
     """Clear error telemetry (useful for testing or periodic cleanup)."""
     self._error_telemetry = None
     self._error_history = []
+
+  def on_state_update(self, game_state: Mapping[str, Any]) -> None:
+    """Update internal state when receiving new game state.
+
+    Detects turn changes and resets per-turn tracking variables.
+    Should be called at the start of each decision cycle.
+
+    Args:
+      game_state: Current game state dictionary
+
+    Example:
+      >>> agent.on_state_update({"turn": 2, "phase": "movement", ...})
+      # Internally resets actions_this_turn if turn changed from 1 to 2
+    """
+    new_turn = game_state.get('turn', self.current_turn)
+
+    if new_turn > self.current_turn:
+      absl_logging.info(
+          "Turn advanced: %d -> %d (reset action tracking)",
+          self.current_turn,
+          new_turn
+      )
+      self.current_turn = new_turn
+      self.actions_this_turn = []
+      self.queries_without_action = 0
+      self.last_turn_units_exhausted = False
+
+  def on_action_taken(self, action: FreeCivAction) -> None:
+    """Record action in turn history.
+
+    Resets query counter and adds action to turn history (excluding end_turn).
+    Should be called immediately after generating an action.
+
+    Args:
+      action: FreeCivAction that was just generated/executed
+
+    Example:
+      >>> action = FreeCivAction(action_type="unit_move", ...)
+      >>> agent.on_action_taken(action)
+      # Internally: queries_without_action reset to 0, action added to history
+    """
+    self.queries_without_action = 0
+    if action.action_type != "end_turn":
+      self.actions_this_turn.append(action)
+      absl_logging.debug(
+          "Action recorded: %s (total this turn: %d)",
+          action.action_type,
+          len(self.actions_this_turn)
+      )
+
+  def should_end_turn(
+      self,
+      state: FreeCivState,
+      player_id: int,
+      max_actions_per_turn: int = 20
+  ) -> bool:
+    """Determine if agent should end turn using heuristic logic.
+
+    This provides a fallback mechanism that doesn't rely solely on LLM decisions.
+    Agents should end their turn when:
+    1. Approaching the action limit (prevents hitting hard cap)
+    2. All units have exhausted movement points (no more meaningful moves)
+    3. Stuck without making progress (5+ queries without actions)
+
+    Args:
+      state: Current FreeCiv game state
+      player_id: ID of the player to check
+      max_actions_per_turn: Maximum allowed actions per turn (safety limit)
+
+    Returns:
+      True if agent should call end_turn, False otherwise
+
+    Example:
+      >>> if agent.should_end_turn(state, player_id=1, max_actions_per_turn=20):
+      ...     return generate_end_turn_action()
+    """
+    # Scenario 1: Approaching action limit (leave 1 slot for end_turn)
+    if len(self.actions_this_turn) >= max_actions_per_turn - 1:
+      absl_logging.info(
+          "Heuristic: Ending turn (approaching action limit %d/%d)",
+          len(self.actions_this_turn),
+          max_actions_per_turn
+      )
+      return True
+
+    # Scenario 2: All units exhausted (no movement points left)
+    my_units = [u for u in state.units.values() if u.owner == player_id]
+    if my_units:
+      all_exhausted = all(u.moves_left == 0 for u in my_units)
+      if all_exhausted and len(self.actions_this_turn) >= 1:
+        absl_logging.info(
+            "Heuristic: Ending turn (all %d units exhausted, %d actions taken)",
+            len(my_units),
+            len(self.actions_this_turn)
+        )
+        self.last_turn_units_exhausted = True
+        return True
+
+    # Scenario 3: Stuck without progress (5+ state queries without taking action)
+    if self.queries_without_action >= 5:
+      absl_logging.warning(
+          "Heuristic: Ending turn (stuck without progress - %d queries without action)",
+          self.queries_without_action
+      )
+      return True
+
+    return False

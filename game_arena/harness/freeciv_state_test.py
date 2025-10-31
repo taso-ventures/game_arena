@@ -225,17 +225,21 @@ class FreeCivLegalActionsTest(absltest.TestCase):
     state = freeciv_state.FreeCivState(raw_state)
     actions = state.get_legal_actions(player_id=0)
 
-    # Should have 2 actions from flat list
-    self.assertEqual(len(actions), 2)
+    # Should have 2 actions from flat list + end_turn (injected)
+    self.assertEqual(len(actions), 3)
 
     # Check action types
     action_types = {a.action_type for a in actions}
     self.assertIn("unit_move", action_types)
     self.assertIn("unit_build_city", action_types)
+    self.assertIn("end_turn", action_types)  # Always injected
 
-    # Check actor IDs
+    # Check actor IDs (unit actions use unit_id, end_turn uses player_id)
     for action in actions:
-      self.assertEqual(action.actor_id, 132)
+      if action.action_type == "end_turn":
+        self.assertEqual(action.actor_id, 0)  # player_id
+      else:
+        self.assertEqual(action.actor_id, 132)  # unit_id
 
   def test_legal_actions_player_filtering(self):
     """Test that legal_actions are filtered by player ownership."""
@@ -261,15 +265,19 @@ class FreeCivLegalActionsTest(absltest.TestCase):
 
     state = freeciv_state.FreeCivState(raw_state)
 
-    # Player 0 should only see unit 132's actions
+    # Player 0 should only see unit 132's actions + end_turn
     actions_p0 = state.get_legal_actions(player_id=0)
-    self.assertEqual(len(actions_p0), 1)
-    self.assertEqual(actions_p0[0].actor_id, 132)
+    self.assertEqual(len(actions_p0), 2)  # unit_move + end_turn
+    unit_actions_p0 = [a for a in actions_p0 if a.action_type != "end_turn"]
+    self.assertEqual(len(unit_actions_p0), 1)
+    self.assertEqual(unit_actions_p0[0].actor_id, 132)
 
-    # Player 1 should only see unit 133's actions
+    # Player 1 should only see unit 133's actions + end_turn
     actions_p1 = state.get_legal_actions(player_id=1)
-    self.assertEqual(len(actions_p1), 1)
-    self.assertEqual(actions_p1[0].actor_id, 133)
+    self.assertEqual(len(actions_p1), 2)  # unit_move + end_turn
+    unit_actions_p1 = [a for a in actions_p1 if a.action_type != "end_turn"]
+    self.assertEqual(len(unit_actions_p1), 1)
+    self.assertEqual(unit_actions_p1[0].actor_id, 133)
 
   def test_legal_actions_dest_x_dest_y_parsing(self):
     """Test parsing of dest_x/dest_y format from proxy."""
@@ -289,8 +297,10 @@ class FreeCivLegalActionsTest(absltest.TestCase):
     state = freeciv_state.FreeCivState(raw_state)
     actions = state.get_legal_actions(player_id=0)
 
-    self.assertEqual(len(actions), 1)
-    action = actions[0]
+    self.assertEqual(len(actions), 2)  # unit_move + end_turn
+    move_actions = [a for a in actions if a.action_type == "unit_move"]
+    self.assertEqual(len(move_actions), 1)
+    action = move_actions[0]
     self.assertEqual(action.action_type, "unit_move")
     self.assertIsNotNone(action.target)
     self.assertEqual(action.target["x"], 11)
@@ -316,12 +326,14 @@ class FreeCivLegalActionsTest(absltest.TestCase):
     state = freeciv_state.FreeCivState(raw_state)
     actions = state.get_legal_actions(player_id=0)
 
-    self.assertEqual(len(actions), 3)
+    self.assertEqual(len(actions), 4)  # 3 unit actions + end_turn
 
     # Find actions by type and check confidence
     for action in actions:
       if action.action_type == "unit_build_city":
         self.assertAlmostEqual(action.confidence, 0.9)  # high priority
+      elif action.action_type == "end_turn":
+        self.assertAlmostEqual(action.confidence, 1.0)  # injected action
       elif action.target and action.target.get("x") == 11:
         self.assertAlmostEqual(action.confidence, 0.7)  # medium priority
       elif action.target and action.target.get("x") == 9:
@@ -343,8 +355,9 @@ class FreeCivLegalActionsTest(absltest.TestCase):
     state = freeciv_state.FreeCivState(raw_state)
     actions = state.get_legal_actions(player_id=0)
 
-    # Should return empty list without error
-    self.assertEqual(len(actions), 0)
+    # Should return only end_turn action (always available)
+    self.assertEqual(len(actions), 1)
+    self.assertEqual(actions[0].action_type, "end_turn")
 
   def test_legal_actions_missing_field(self):
     """Test behavior when legal_actions field is missing."""
@@ -362,8 +375,9 @@ class FreeCivLegalActionsTest(absltest.TestCase):
     state = freeciv_state.FreeCivState(raw_state)
     actions = state.get_legal_actions(player_id=0)
 
-    # Should return empty list with warning logged
-    self.assertEqual(len(actions), 0)
+    # Should return only end_turn action (always available)
+    self.assertEqual(len(actions), 1)
+    self.assertEqual(actions[0].action_type, "end_turn")
 
   def test_legal_actions_malformed_action_skipped(self):
     """Test that malformed actions are skipped gracefully."""
@@ -386,10 +400,16 @@ class FreeCivLegalActionsTest(absltest.TestCase):
     state = freeciv_state.FreeCivState(raw_state)
     actions = state.get_legal_actions(player_id=0)
 
-    # Should only return the valid action
-    self.assertEqual(len(actions), 1)
-    self.assertEqual(actions[0].action_type, "unit_move")
-    self.assertEqual(actions[0].actor_id, 132)
+    # Should return the valid action + end_turn
+    self.assertEqual(len(actions), 2)
+    move_actions = [a for a in actions if a.action_type == "unit_move"]
+    self.assertEqual(len(move_actions), 1)
+    self.assertEqual(move_actions[0].action_type, "unit_move")
+    self.assertEqual(move_actions[0].actor_id, 132)
+
+    # Verify end_turn is present
+    end_turn_actions = [a for a in actions if a.action_type == "end_turn"]
+    self.assertEqual(len(end_turn_actions), 1)
 
   def test_legal_actions_caching(self):
     """Test that legal_actions are cached properly."""
