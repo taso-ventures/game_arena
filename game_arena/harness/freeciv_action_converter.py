@@ -176,10 +176,12 @@ class FreeCivActionConverter:
     return canonical_string
 
   def string_to_action(self, action_string: str) -> FreeCivAction:
-    """Convert canonical string to FreeCivAction.
+    """Convert action string from JSON format to FreeCivAction.
+
+    Expected format: {"type": "unit_build_city", "unit_id": 101}
 
     Args:
-      action_string: Canonical string representation
+      action_string: JSON string representation
 
     Returns:
       FreeCivAction object
@@ -187,12 +189,100 @@ class FreeCivActionConverter:
     Raises:
       ValueError: If string format is invalid
     """
-    # Parse the canonical string format
-    # Example: "unit_move_warrior(101)_to(2,3)"
+    import json
+    import re
+
+    action_string = action_string.strip()
+
     try:
-      return self._parse_canonical_string(action_string)
-    except Exception as e:
-      raise ValueError(f"Invalid action string format: {action_string}") from e
+      # Extract JSON from markdown code blocks if present
+      if "```json" in action_string:
+        match = re.search(r'```json\s*(\{.*?\})\s*```', action_string, re.DOTALL)
+        if match:
+          action_string = match.group(1)
+      elif "```" in action_string:
+        match = re.search(r'```\s*(\{.*?\})\s*```', action_string, re.DOTALL)
+        if match:
+          action_string = match.group(1)
+
+      # Try direct JSON parsing first
+      try:
+        action_dict = json.loads(action_string)
+        return self._json_to_action(action_dict)
+      except json.JSONDecodeError:
+        # If direct parsing fails, try to extract JSON from prefixed text
+        # Handles cases like: "FINAL DECISION: {...} because..."
+        json_match = re.search(r'\{[^}]*"type"[^}]*\}', action_string)
+        if json_match:
+          extracted_json = json_match.group(0)
+          action_dict = json.loads(extracted_json)
+          return self._json_to_action(action_dict)
+        raise
+
+    except (json.JSONDecodeError, ValueError) as e:
+      raise ValueError(f"Invalid JSON action format: {action_string}. Error: {e}") from e
+
+  def _json_to_action(self, action_dict: Dict[str, Any]) -> FreeCivAction:
+    """Convert JSON action dict to FreeCivAction.
+
+    Args:
+      action_dict: Dictionary containing action data from JSON
+
+    Returns:
+      FreeCivAction object
+
+    Raises:
+      ValueError: If JSON structure is invalid
+    """
+    action_type = action_dict.get("type")
+    if not action_type:
+      raise ValueError("JSON action must have 'type' field")
+
+    # Determine actor_id and source from action-specific fields
+    actor_id = 0
+    source = "player"
+
+    if "unit_id" in action_dict:
+      actor_id = action_dict["unit_id"]
+      source = "unit"
+    elif "city_id" in action_dict:
+      actor_id = action_dict["city_id"]
+      source = "city"
+    elif action_type in ["tech_research", "end_turn"]:
+      actor_id = 0
+      source = "player"
+
+    # Build target dict based on action type
+    target = {}
+
+    # Movement actions (unit_move, unit_attack)
+    if "dest_x" in action_dict and "dest_y" in action_dict:
+      target = {"x": action_dict["dest_x"], "y": action_dict["dest_y"]}
+    elif "target_unit_id" in action_dict:
+      target = {"id": action_dict["target_unit_id"]}
+
+    # Tech research
+    elif "tech_name" in action_dict:
+      target = {"value": action_dict["tech_name"]}
+
+    # City production
+    elif "production_type" in action_dict:
+      target = {"value": action_dict["production_type"]}
+
+    # Build parameters dict (usually empty)
+    parameters = {}
+    if "parameters" in action_dict:
+      parameters = action_dict["parameters"]
+
+    return FreeCivAction(
+        action_type=action_type,
+        actor_id=actor_id,
+        target=target,
+        parameters=parameters,
+        source=source,
+        confidence=1.0,
+        parse_method="json",
+    )
 
   def _find_action_index(
       self, target_action: FreeCivAction, legal_actions: List[FreeCivAction]
@@ -241,6 +331,12 @@ class FreeCivActionConverter:
     Returns:
       Player ID
     """
+    # CRITICAL FIX: For player-level actions, actor_id IS the player_id
+    # These actions (end_turn, pass, skip, tech_research, diplomacy_init) are
+    # performed by the player directly, not through units/cities
+    if action.source == "player":
+      return action.actor_id
+
     # Try to extract from action parameters
     if hasattr(action, 'parameters') and action.parameters:
       if 'player_id' in action.parameters:
@@ -291,7 +387,7 @@ class FreeCivActionConverter:
     """
     # Try to find the actor in units and get its owner
     if hasattr(state, 'units') and state.units:
-      for unit in state.units:
+      for unit in state.units.values():
         if isinstance(unit, dict):
           if unit.get('id') == actor_id:
             return unit.get('owner', unit.get('player_id'))
@@ -300,7 +396,7 @@ class FreeCivActionConverter:
 
     # Try to find the actor in cities
     if hasattr(state, 'cities') and state.cities:
-      for city in state.cities:
+      for city in state.cities.values():
         if isinstance(city, dict):
           if city.get('id') == actor_id:
             return city.get('owner', city.get('player_id'))
@@ -506,6 +602,20 @@ class FreeCivActionConverter:
           action_type="tech_research",
           actor_id=int(player_id),
           target={"value": tech_name},
+          parameters={},
+          source="player",
+      )
+
+    # Parse bare action types (no parameters): end_turn, pass, skip
+    # LLMs often generate these without explicit actor_id
+    # Format: "end_turn" or "pass"
+    bare_action_match = re.match(r"^(end_turn|pass|skip)$", action_string)
+    if bare_action_match:
+      action_type = bare_action_match.group(1)
+      return FreeCivAction(
+          action_type=action_type,
+          actor_id=1,  # Placeholder - caller should set correct player_id
+          target=None,
           parameters={},
           source="player",
       )

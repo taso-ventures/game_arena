@@ -860,7 +860,23 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         compressed_obs = self._compress_for_model(obs_dict, model_config)
 
         # Build strategic analysis components
-        strategic_summary = self._build_strategic_summary(compressed_obs, current_player_id)
+        # Use pre-computed strategic_summary from FreeCiv3D Gateway if available
+        # FreeCiv3D's LLM Gateway provides strategic analysis in state_update messages:
+        # - strategic_summary: { cities_count, units_count, tech_progress, military_strength }
+        # - immediate_priorities: List of strategic recommendations
+        # - threats: Current military/economic/diplomatic threats
+        # - opportunities: Strategic opportunities (expansion, resources, tech advantages)
+        if 'strategic_summary' in compressed_obs and compressed_obs['strategic_summary']:
+            # Use gateway's strategic analysis
+            strategic_summary = self._format_gateway_strategic_summary(
+                compressed_obs['strategic_summary'],
+                compressed_obs.get('immediate_priorities', []),
+                compressed_obs.get('threats', []),
+                compressed_obs.get('opportunities', [])
+            )
+        else:
+            # Fallback to local computation if gateway data unavailable
+            strategic_summary = self._build_strategic_summary(compressed_obs, current_player_id)
         prioritized_actions = self._build_prioritized_actions(
             legal_actions, action_context=action_context
         )
@@ -1029,6 +1045,60 @@ class FreeCivPromptBuilder(BasePromptBuilder):
 
         return victory_type, progress
 
+    def _format_gateway_strategic_summary(
+        self,
+        strategic_summary: Dict[str, Any],
+        immediate_priorities: List[str],
+        threats: List[Dict[str, Any]],
+        opportunities: List[Dict[str, Any]]
+    ) -> str:
+        """Format strategic analysis from FreeCiv3D Gateway.
+
+        Args:
+            strategic_summary: Strategic metrics from gateway
+                {cities_count, units_count, tech_progress, military_strength}
+            immediate_priorities: List of recommended strategic priorities
+            threats: List of threat objects {type, severity, description}
+            opportunities: List of opportunity objects {type, value, description}
+
+        Returns:
+            Formatted strategic summary string
+        """
+        parts = []
+
+        # Strategic metrics
+        parts.append("=== Strategic Overview ===")
+        parts.append(f"Cities: {strategic_summary.get('cities_count', 'N/A')}")
+        parts.append(f"Units: {strategic_summary.get('units_count', 'N/A')}")
+        parts.append(f"Technology Progress: {strategic_summary.get('tech_progress', 'N/A')}")
+        parts.append(f"Military Strength: {strategic_summary.get('military_strength', 'N/A')}")
+
+        # Immediate priorities
+        if immediate_priorities:
+            parts.append("\n=== Immediate Priorities ===")
+            for i, priority in enumerate(immediate_priorities, 1):
+                parts.append(f"{i}. {priority}")
+
+        # Threats
+        if threats:
+            parts.append("\n=== Current Threats ===")
+            for threat in threats:
+                threat_type = threat.get('type', 'Unknown')
+                severity = threat.get('severity', 'Unknown')
+                desc = threat.get('description', '')
+                parts.append(f"[{severity}] {threat_type}: {desc}")
+
+        # Opportunities
+        if opportunities:
+            parts.append("\n=== Strategic Opportunities ===")
+            for opp in opportunities:
+                opp_type = opp.get('type', 'Unknown')
+                value = opp.get('value', 'Unknown')
+                desc = opp.get('description', '')
+                parts.append(f"[Value: {value}] {opp_type}: {desc}")
+
+        return "\n".join(parts)
+
     def _build_strategic_summary(self, obs: Dict[str, Any], player_id: int) -> str:
         """Build strategic summary of current situation.
 
@@ -1064,22 +1134,26 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             priority = self._get_action_priority(action)
             action_groups[priority].append(action)
 
-        # Format prioritized actions with CANONICAL FORMAT for LLM to copy
+        # Format prioritized actions with JSON FORMAT for LLM to copy
         formatted_actions = []
         formatted_actions.append("\n" + "=" * 80)
         formatted_actions.append("RESPONSE FORMAT REQUIREMENTS")
         formatted_actions.append("=" * 80)
         formatted_actions.append("")
-        formatted_actions.append("⚠️  CRITICAL: Respond with ONLY the action string, nothing else!")
+        formatted_actions.append("⚠️  CRITICAL: Respond with ONLY a JSON object, nothing else!")
         formatted_actions.append("")
-        formatted_actions.append("✅ CORRECT format:")
-        formatted_actions.append("   unit_move_settlers(101)_to(2,3)")
+        formatted_actions.append("✅ CORRECT format examples:")
+        formatted_actions.append('   {"type": "unit_build_city", "unit_id": 101}')
+        formatted_actions.append('   {"type": "unit_move", "unit_id": 102, "dest_x": 15, "dest_y": 20}')
+        formatted_actions.append('   {"type": "tech_research", "tech_name": "alphabet"}')
+        formatted_actions.append('   {"type": "end_turn"}')
         formatted_actions.append("")
-        formatted_actions.append("❌ WRONG format (adds explanation):")
-        formatted_actions.append("   I will move my settlers: unit_move_settlers(101)_to(2,3)")
+        formatted_actions.append("❌ WRONG formats:")
+        formatted_actions.append("   unit_build_city_unit(101)  ← String format not supported")
+        formatted_actions.append("   I will build: {...}  ← Extra text not allowed")
         formatted_actions.append("")
-        formatted_actions.append("Copy EXACTLY one action string from the list below.")
-        formatted_actions.append("Do NOT add reasoning, explanations, or extra text.")
+        formatted_actions.append("Copy EXACTLY one JSON action from the list below.")
+        formatted_actions.append("Do NOT add reasoning, explanations, markdown, or extra text.")
         formatted_actions.append("=" * 80)
         formatted_actions.append("")
 
@@ -1115,12 +1189,12 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             priority_name = ActionPriority(priority).name.title().replace('_', ' ')
             formatted_actions.append(f"\n{priority_name} Priority:")
 
-            # Show top 10 actions per priority with full canonical format
+            # Show top 10 actions per priority in JSON format
             for i, action in enumerate(actions[:10], 1):
-                # Get canonical string that LLM should copy exactly
-                canonical = self._action_to_canonical_string(action)
+                # Get JSON representation that LLM should copy exactly
+                json_repr = self._action_to_json(action)
                 impact = self._assess_action_impact(action)
-                formatted_actions.append(f"{i}. {canonical}")
+                formatted_actions.append(f"{i}. {json_repr}")
                 formatted_actions.append(f"   Impact: {impact}")
 
         return "\n".join(formatted_actions)
@@ -1167,6 +1241,46 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             return "REQUIRED: Call this when you have no more valuable actions to take this turn. Both players must end_turn for the game to advance."
         else:
             return "Variable impact: Situation dependent"
+
+    def _action_to_json(self, action: FreeCivAction) -> str:
+        """Convert FreeCivAction to JSON string format for prompt display.
+
+        This generates a JSON representation that matches the format LLMs should
+        output when selecting an action. The JSON format is unambiguous, easy to
+        parse, and matches the structure of legal_actions from the gateway.
+
+        Args:
+            action: FreeCivAction to convert
+
+        Returns:
+            JSON string representation of the action
+        """
+        import json
+
+        # Build JSON dict with action-type-specific fields
+        json_dict = {"type": action.action_type}
+
+        # Add actor_id field based on source
+        if action.source == "unit":
+            json_dict["unit_id"] = action.actor_id
+        elif action.source == "city":
+            json_dict["city_id"] = action.actor_id
+        # Player-level actions (tech_research, end_turn) don't need actor_id
+
+        # Add target fields based on action type
+        if action.target:
+            if "x" in action.target and "y" in action.target:
+                # Movement action
+                json_dict["dest_x"] = action.target["x"]
+                json_dict["dest_y"] = action.target["y"]
+            elif "value" in action.target:
+                # Tech research or city production
+                if action.action_type == "tech_research":
+                    json_dict["tech_name"] = str(action.target["value"]).lower()
+                elif action.action_type == "city_production":
+                    json_dict["production_type"] = str(action.target["value"]).lower()
+
+        return json.dumps(json_dict)
 
     def _action_to_canonical_string(self, action: FreeCivAction) -> str:
         """Convert FreeCivAction to canonical string format for prompt display.

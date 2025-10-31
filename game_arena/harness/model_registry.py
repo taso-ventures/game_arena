@@ -85,6 +85,10 @@ class ModelRegistry(enum.Enum):
             case ModelRegistry.GEMINI_2_5_FLASH | ModelRegistry.GEMINI_2_5_PRO:
                 default_kwargs = {
                     "api_options": {"include_thoughts": True},
+                    "model_options": {
+                        "max_output_tokens": 8192,  # Reasonable limit (max is 65536)
+                        "temperature": 0.7,  # Add variety to avoid repetition
+                    },
                 }
                 kwargs = default_kwargs | kwargs
                 return model_generation_sdk.AIStudioModel(

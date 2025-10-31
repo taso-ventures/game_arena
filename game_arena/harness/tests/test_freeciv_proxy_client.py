@@ -109,8 +109,11 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       # Request state
       state = await self.client.get_state()
       self.assertIsInstance(state, dict)
-      self.assertIn("data", state)
-      self.assertIn("turn", state["data"])
+      # Protocol models extract to flattened format (no "data" field)
+      self.assertIn("turn", state)
+      self.assertIn("players", state)
+      self.assertIn("units", state)
+      self.assertIn("cities", state)
 
   async def test_state_query_with_format(self):
       """Test state query with different formats."""
@@ -402,7 +405,8 @@ class TestFreeCivProxyClient(unittest.IsolatedAsyncioTestCase):
       second_duration = time.time() - start_time
 
       # States should be identical and second should be faster
-      self.assertEqual(state1["data"]["turn"], state2["data"]["turn"])
+      # Protocol models extract to flattened format (no "data" field)
+      self.assertEqual(state1["turn"], state2["turn"])
       self.assertLess(second_duration, first_duration)
 
   async def test_cache_expiration(self):

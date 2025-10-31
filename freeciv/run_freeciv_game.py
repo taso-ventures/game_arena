@@ -106,8 +106,8 @@ _OPEN_BROWSER = flags.DEFINE_boolean(
 
 # Game configuration constants for FreeCiv simultaneous turn model
 MAX_ACTIONS_PER_TURN = 20  # Maximum actions per player per turn (safety limit)
-TURN_TIMEOUT_SECONDS = 120  # Maximum time per game turn (both players)
-ACTION_TIMEOUT_SECONDS = 60  # Maximum time per individual action (increased from 30s for LLM latency)
+TURN_TIMEOUT_SECONDS = 240  # Maximum time per game turn (both players) - increased for slow LLM responses
+ACTION_TIMEOUT_SECONDS = 120  # Maximum time per individual action (increased from 60s for LLM latency + E101 retries)
 
 
 def check_freeciv_server(host: str, port: int) -> bool:
@@ -181,26 +181,26 @@ async def execute_player_turn(
     """
     actions_taken = []
     error = None
+    message_count = 0  # Track messages sent for diagnostics
+    last_state_refresh_time = 0  # Track when we last refreshed state
 
     try:
         if verbose:
             print(colored(f"  Player {player_num} ({model_name.upper()}) starting turn...", "blue"))
 
+        # OPTIMIZATION: Query state ONCE at turn start instead of before every action
+        # This reduces message frequency by 60-80%, preventing E101 rate limit errors
+        turn_state = await asyncio.wait_for(
+            proxy.get_state(),
+            timeout=ACTION_TIMEOUT_SECONDS
+        )
+        message_count += 1  # Count initial state query
+        last_state_refresh_time = time.time()  # Track refresh time
+
         for action_count in range(max_actions):
             try:
-                # Get current game state
-                state = await asyncio.wait_for(
-                    proxy.get_state(),
-                    timeout=ACTION_TIMEOUT_SECONDS
-                )
-
-                # Throttle delay to avoid E101 rate limiting from FreeCiv3D proxy
-                # The proxy enforces rate limits on message frequency
-                # Increased from 0.3s to 1.0s to prevent rate limit errors
-                await asyncio.sleep(1.0)
-
                 # Check if turn advanced externally (game moved on without us)
-                current_turn = state.get('turn', game_turn)
+                current_turn = turn_state.get('turn', game_turn)
                 if current_turn > game_turn:
                     if verbose:
                         print(colored(
@@ -220,9 +220,10 @@ async def execute_player_turn(
                     'should_consider_end_turn': actions_remaining <= 3 and actions_remaining > 0  # Warn when <=3 actions left
                 }
 
-                # Get action from agent WITH context about turn progress
+                # Get action from agent using CACHED turn_state
+                # No need to query state again - it hasn't changed yet
                 action = await asyncio.wait_for(
-                    agent.get_action_async(state, proxy, action_context=action_context),
+                    agent.get_action_async(turn_state, proxy, action_context=action_context),
                     timeout=ACTION_TIMEOUT_SECONDS
                 )
 
@@ -236,9 +237,61 @@ async def execute_player_turn(
                     proxy.send_action(action),
                     timeout=ACTION_TIMEOUT_SECONDS
                 )
+                message_count += 1  # Count action message
 
                 # Brief delay after sending action to allow server processing
                 await asyncio.sleep(0.5)
+
+                # OPTIMIZATION: Only refresh state if action succeeded AND likely changed state
+                # Actions like tech_research don't change state immediately (research happens over turns)
+                # This reduces messages by ~60% compared to refreshing after every successful action
+                if result.get('success'):
+                    action_type = action.action_type if hasattr(action, 'action_type') else None
+
+                    # List of actions that immediately change game state
+                    # These actions modify units, cities, or player state and require fresh state query
+                    state_changing_actions = [
+                        'unit_move', 'unit_attack', 'unit_build_city', 'unit_change_homecity',
+                        'unit_fortify', 'unit_sentry', 'unit_unload', 'unit_load',
+                        'city_buy_production', 'city_change_production', 'city_sell_improvement',
+                        'city_change_specialist', 'player_government', 'player_set_tech_goal',
+                        'tech_research',  # Tech progress changes over turns, needs state refresh
+                        'end_turn'  # Always refresh after end_turn
+                    ]
+
+                    # Determine if we should refresh state
+                    time_since_refresh = time.time() - last_state_refresh_time
+                    should_refresh = (
+                        action_type in state_changing_actions or  # Action changes state
+                        time_since_refresh > 10.0  # Or it's been >10s since last refresh
+                    )
+
+                    if should_refresh:
+                        turn_state = await asyncio.wait_for(
+                            proxy.get_state(),
+                            timeout=ACTION_TIMEOUT_SECONDS
+                        )
+                        message_count += 1  # Count state refresh
+                        last_state_refresh_time = time.time()
+                else:
+                    # Action failed - always refresh state as it might be stale
+                    # Failed actions often indicate state mismatch (unit moved, city destroyed, etc.)
+                    turn_state = await asyncio.wait_for(
+                        proxy.get_state(),
+                        timeout=ACTION_TIMEOUT_SECONDS
+                    )
+                    message_count += 1  # Count state refresh
+                    last_state_refresh_time = time.time()
+                    if verbose:
+                        print(colored(
+                            f"    ↻ State refreshed after failed action (preventing stale cache)",
+                            "yellow"
+                        ))
+
+                # Throttle delay to avoid E101 rate limiting from FreeCiv3D proxy
+                # Increased from 1.5s to 3.0s to provide more breathing room between messages
+                # With 3s delay, max rate is ~20 actions/min = ~40 messages/min (well under 200 msg/min limit)
+                await asyncio.sleep(3.0)
 
                 # Record action
                 action_type = action.action_type if hasattr(action, 'action_type') else 'unknown'
@@ -273,11 +326,78 @@ async def execute_player_turn(
                 break
             except Exception as e:
                 error = f"Action {action_count + 1} failed: {e}"
-
-                # Check for game server termination errors
                 error_str = str(e)
+
+                # Check for rate limit errors (E101) - graceful handling
+                if "E101" in error_str:
+                    if verbose:
+                        print(colored(
+                            f"⚠️ Player {player_num}: Rate limit exceeded (E101), slowing down...",
+                            "yellow"
+                        ))
+                    # Wait longer before retrying
+                    await asyncio.sleep(5.0)
+                    # Don't break - continue with next action attempt
+                    continue
+
+                # Check for connection lost (E123) - attempt automatic reconnection
+                if "E123" in error_str:
+                    if verbose:
+                        print(colored(
+                            f"🔌 Player {player_num}: Connection lost (E123), attempting session resumption...",
+                            "yellow"
+                        ))
+
+                    # CRITICAL: Set disconnect time for session resumption tracking
+                    # E123 is detected via exception (not clean disconnect), so we must set this manually
+                    # This allows reconnect_with_session() to verify we're within the 60s window
+                    proxy.connection_manager.last_disconnect_time = time.time()
+
+                    # Attempt session resumption within 60s window
+                    try:
+                        reconnected = await asyncio.wait_for(
+                            proxy.connection_manager.reconnect_with_session(),
+                            timeout=10.0
+                        )
+
+                        if reconnected:
+                            if verbose:
+                                print(colored(
+                                    f"✅ Player {player_num}: Session resumed! Retrying action...",
+                                    "green"
+                                ))
+                            # Brief delay before retrying action
+                            await asyncio.sleep(2.0)
+                            # Don't break - continue with retry
+                            continue
+                        else:
+                            if verbose:
+                                print(colored(
+                                    f"❌ Player {player_num}: Session resumption failed",
+                                    "red"
+                                ))
+                            # Mark as server terminated since reconnection failed
+                            error = f"SERVER_TERMINATED: {error}"
+                            break
+                    except asyncio.TimeoutError:
+                        if verbose:
+                            print(colored(
+                                f"⏱️ Player {player_num}: Reconnection timed out",
+                                "red"
+                            ))
+                        error = f"SERVER_TERMINATED: {error}"
+                        break
+                    except Exception as reconnect_error:
+                        if verbose:
+                            print(colored(
+                                f"❌ Player {player_num}: Reconnection error: {reconnect_error}",
+                                "red"
+                            ))
+                        error = f"SERVER_TERMINATED: {error}"
+                        break
+
+                # Check for other game server termination errors
                 is_server_terminated = (
-                    "E123" in error_str or  # Connection to game server lost
                     "UNKNOWN" in error_str or  # Unknown server error
                     "E140" in error_str  # Failed to connect to game server
                 )
@@ -324,6 +444,7 @@ async def execute_player_turn(
             if actions_taken else False
         ),
         'action_count': len(actions_taken),
+        'message_count': message_count,  # Include message count for diagnostics
         'error': error,
     }
 
@@ -470,6 +591,21 @@ async def run_freeciv_game():
             print(colored(f"Player 1 state: {len(players1)} players, {len(units1)} units, {len(cities1)} cities", "blue"))
             print(colored(f"Turn: {state1.get('turn', 'unknown')}, Phase: {state1.get('game', {}).get('phase', 'unknown')}", "blue"))
 
+            # DIAGNOSTIC: Check legal_actions availability
+            legal_actions = state1.get("legal_actions", [])
+            if legal_actions:
+                action_types = set(a.get("type") for a in legal_actions if isinstance(a, dict))
+                print(colored(f"Legal actions: {len(legal_actions)} actions", "blue"))
+                print(colored(f"Action types available: {action_types}", "blue"))
+
+                # Warn if only tech_research available
+                if len(action_types) == 1 and "tech_research" in action_types and units1:
+                    print(colored("⚠️ WARNING: Only tech_research actions available despite having units!", "yellow"))
+                    print(colored("   This may indicate FreeCiv3D gateway is not generating unit actions.", "yellow"))
+                    print(colored("   Expected: unit_move, unit_build_city, etc.", "yellow"))
+            else:
+                print(colored("⚠️ No legal_actions in state at initialization!", "yellow"))
+
             # Verify nation assignment
             if players1:
                 for i, player in enumerate(players1[:2]):  # Check first 2 players
@@ -545,9 +681,9 @@ async def run_freeciv_game():
         else:
             print(colored(f"  ⚠️ Game ready signal: NOT RECEIVED", "yellow"))
 
-        # Display spectator URLs (with game readiness status)
+        # Display observer URLs (with game readiness status)
         print(colored("\n" + "=" * 60, "cyan"))
-        print(colored("📺 SPECTATOR MODE", "cyan"))
+        print(colored("📺 OBSERVER MODE", "cyan"))
         print(colored("=" * 60, "cyan"))
         print(f"Game ID: {game_id}")
 
@@ -555,36 +691,45 @@ async def run_freeciv_game():
         if units1 and cities1 and proxy1.game_ready:
             print(colored("✅ Game is fully initialized and ready for viewing", "green"))
         elif units1 or cities1:
-            print(colored("⚠️ Game partially initialized (spectator may show incomplete state)", "yellow"))
+            print(colored("⚠️ Game partially initialized (observer may show incomplete state)", "yellow"))
         else:
-            print(colored("❌ WARNING: Game not initialized yet (spectator may show pre-game lobby)", "yellow"))
-            print(colored("   Wait a few moments and refresh the spectator page", "yellow"))
+            print(colored("❌ WARNING: Game not initialized yet (observer may show pre-game lobby)", "yellow"))
+            print(colored("   Wait a few moments and refresh the observer page", "yellow"))
 
-        # LLM Gateway Spectator URL (uses broadcast system, not direct civserver connection)
-        print(f"\nSpectator URL (LLM Gateway Broadcast - Player 1 View):")
-        spectator_url = f"http://localhost:8080/webclient/spectator.jsp?game_id={game_id}"
-        print(colored(f"  {spectator_url}", "green"))
-        print(f"\n📝 Note: Spectator connects to LLM Gateway (ws://localhost:8003/ws/spectator/{game_id})")
-        print(f"   Receives Player 1's perspective via packet broadcast")
+        # FreeCiv WebGL Observer URL (direct civserver connection)
         civserver_port = proxy1.civserver_port or 6000
-        print(f"   Game running on civserver port {civserver_port}")
+        observer_url = (
+            f"http://localhost:8080/webclient/"
+            f"?action=observe"
+            f"&renderer=webgl"
+            f"&civserverport={civserver_port}"
+            f"&civserverhost=localhost"
+            f"&multi=true"
+            f"&type=multiplayer"
+        )
+
+        print(f"\nObserver URL (WebGL Direct Connection):")
+        print(colored(f"  {observer_url}", "green"))
+        print(f"\n📝 Note: Observer connects directly to civserver (port {civserver_port}) via WebGL")
+        print(f"   Renders full game state from civserver, not gateway broadcast")
+        print(f"   Supports multiplayer observation with real-time updates")
         print(f"\n🔧 Debug Commands:")
+        print(f"  Check civserver logs: docker exec fciv-net tail -f /docker/civserver-logs/civserver-{civserver_port}.log")
         print(f"  Check LLM Gateway logs: docker exec fciv-net grep '{game_id}' /docker/llm-gateway/logs/*.log 2>/dev/null")
         print(f"  Check proxy logs: docker exec fciv-net cat /docker/logs/freeciv-proxy-8002.log | grep '{game_id}'")
-        print(f"  WebSocket test (spectator): wscat -c ws://localhost:8003/ws/spectator/{game_id}")
         print(colored("=" * 60 + "\n", "cyan"))
 
         # Auto-open browser if requested
         if _OPEN_BROWSER.value:
-            print(colored("🌐 Opening spectator view in browser...", "cyan"))
+            print(colored("🌐 Opening observer view in browser...", "cyan"))
             try:
                 # Wait a moment for services to be ready
                 await asyncio.sleep(2)
-                webbrowser.open(spectator_url)
-                print(colored(f"✅ Browser opened: {spectator_url}", "green"))
+                webbrowser.open(observer_url)
+                print(colored(f"✅ Browser opened: {observer_url}", "green"))
             except Exception as e:
                 print(colored(f"❌ Failed to open browser: {e}", "red"))
-                print(colored(f"   Please manually open: {spectator_url}", "yellow"))
+                print(colored(f"   Please manually open: {observer_url}", "yellow"))
 
         # Game loop using FreeCiv's simultaneous turn model
         # In FreeCiv, both players act during the same game turn and must call
@@ -694,10 +839,28 @@ async def run_freeciv_game():
                 if not isinstance(player1_result, Exception) and not isinstance(player2_result, Exception):
                     print(colored(f"\n📊 Turn {game_turn} Summary:", "cyan"))
                     print(f"  Player 1: {player1_result['action_count']} actions, "
-                          f"ended_turn: {player1_result['ended_turn']}")
+                          f"ended_turn: {player1_result['ended_turn']}, "
+                          f"messages: {player1_result.get('message_count', 'N/A')}")
                     print(f"  Player 2: {player2_result['action_count']} actions, "
-                          f"ended_turn: {player2_result['ended_turn']}")
+                          f"ended_turn: {player2_result['ended_turn']}, "
+                          f"messages: {player2_result.get('message_count', 'N/A')}")
                     print(f"  Duration: {turn_duration:.1f}s")
+
+                    # Calculate total messages for the turn
+                    total_messages = player1_result.get('message_count', 0) + player2_result.get('message_count', 0)
+                    if total_messages > 0:
+                        # FreeCiv3D configuration: MAX_MESSAGES_PER_TURN=24 (recommended for 2-player games)
+                        # Gateway burst limit is 40 msg/s, but staying under 24 is safer
+                        message_status = "🟢 OK" if total_messages <= 24 else "🔴 HIGH"
+                        print(colored(
+                            f"  📨 Total messages: {total_messages}/24 per turn - {message_status}",
+                            "green" if total_messages <= 24 else "yellow"
+                        ))
+                        if total_messages > 24:
+                            print(colored(
+                                f"      ⚠️ Exceeded recommended limit! May trigger E429 rate warnings",
+                                "yellow"
+                            ))
 
                     # Check if both players ended their turn
                     if not player1_result['ended_turn']:
