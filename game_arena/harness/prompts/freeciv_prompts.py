@@ -860,12 +860,23 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         compressed_obs = self._compress_for_model(obs_dict, model_config)
 
         # Build strategic analysis components
-        # TODO(AGE-XXX): Use state.strategic_summary from FreeCiv3D when available
-        # FreeCiv3D's LLM Gateway provides pre-computed strategic analysis in llm_optimized format:
-        # - cities_count, units_count, tech_progress, military_strength
-        # This can replace or augment our local _build_strategic_summary() computation
-        # Check if compressed_obs contains 'strategic_summary' field before building locally
-        strategic_summary = self._build_strategic_summary(compressed_obs, current_player_id)
+        # Use pre-computed strategic_summary from FreeCiv3D Gateway if available
+        # FreeCiv3D's LLM Gateway provides strategic analysis in state_update messages:
+        # - strategic_summary: { cities_count, units_count, tech_progress, military_strength }
+        # - immediate_priorities: List of strategic recommendations
+        # - threats: Current military/economic/diplomatic threats
+        # - opportunities: Strategic opportunities (expansion, resources, tech advantages)
+        if 'strategic_summary' in compressed_obs and compressed_obs['strategic_summary']:
+            # Use gateway's strategic analysis
+            strategic_summary = self._format_gateway_strategic_summary(
+                compressed_obs['strategic_summary'],
+                compressed_obs.get('immediate_priorities', []),
+                compressed_obs.get('threats', []),
+                compressed_obs.get('opportunities', [])
+            )
+        else:
+            # Fallback to local computation if gateway data unavailable
+            strategic_summary = self._build_strategic_summary(compressed_obs, current_player_id)
         prioritized_actions = self._build_prioritized_actions(
             legal_actions, action_context=action_context
         )
@@ -1033,6 +1044,60 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             progress = min(100, (city_count * 50) + (len(units) * 10))
 
         return victory_type, progress
+
+    def _format_gateway_strategic_summary(
+        self,
+        strategic_summary: Dict[str, Any],
+        immediate_priorities: List[str],
+        threats: List[Dict[str, Any]],
+        opportunities: List[Dict[str, Any]]
+    ) -> str:
+        """Format strategic analysis from FreeCiv3D Gateway.
+
+        Args:
+            strategic_summary: Strategic metrics from gateway
+                {cities_count, units_count, tech_progress, military_strength}
+            immediate_priorities: List of recommended strategic priorities
+            threats: List of threat objects {type, severity, description}
+            opportunities: List of opportunity objects {type, value, description}
+
+        Returns:
+            Formatted strategic summary string
+        """
+        parts = []
+
+        # Strategic metrics
+        parts.append("=== Strategic Overview ===")
+        parts.append(f"Cities: {strategic_summary.get('cities_count', 'N/A')}")
+        parts.append(f"Units: {strategic_summary.get('units_count', 'N/A')}")
+        parts.append(f"Technology Progress: {strategic_summary.get('tech_progress', 'N/A')}")
+        parts.append(f"Military Strength: {strategic_summary.get('military_strength', 'N/A')}")
+
+        # Immediate priorities
+        if immediate_priorities:
+            parts.append("\n=== Immediate Priorities ===")
+            for i, priority in enumerate(immediate_priorities, 1):
+                parts.append(f"{i}. {priority}")
+
+        # Threats
+        if threats:
+            parts.append("\n=== Current Threats ===")
+            for threat in threats:
+                threat_type = threat.get('type', 'Unknown')
+                severity = threat.get('severity', 'Unknown')
+                desc = threat.get('description', '')
+                parts.append(f"[{severity}] {threat_type}: {desc}")
+
+        # Opportunities
+        if opportunities:
+            parts.append("\n=== Strategic Opportunities ===")
+            for opp in opportunities:
+                opp_type = opp.get('type', 'Unknown')
+                value = opp.get('value', 'Unknown')
+                desc = opp.get('description', '')
+                parts.append(f"[Value: {value}] {opp_type}: {desc}")
+
+        return "\n".join(parts)
 
     def _build_strategic_summary(self, obs: Dict[str, Any], player_id: int) -> str:
         """Build strategic summary of current situation.

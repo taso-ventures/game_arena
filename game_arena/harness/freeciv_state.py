@@ -48,10 +48,11 @@ def _validate_json_depth(data: Any, current_depth: int = 0) -> None:
 class _FallbackGameState:
     """Minimal fallback for pyspiel.State when OpenSpiel is unavailable.
 
-    TODO: Explore disconnecting from pyspiel.State dependency.
+    TODO(AGE-197): Explore disconnecting from pyspiel.State dependency.
     Consider creating a standalone GameState interface that doesn't require
     OpenSpiel compatibility. This would simplify the architecture and remove
     the need for this fallback mechanism.
+    See Linear issue: https://linear.app/agentclash/issue/AGE-197
     """
 
     def current_player(self) -> int:  # pragma: no cover - interface placeholder
@@ -1091,17 +1092,39 @@ class FreeCivUnit(BaseModel):
         """Convert FreeCiv activity integers to appropriate string/None values.
 
         FreeCiv sends activity as an integer code (e.g., 0 for idle/no activity).
-        Convert 0 to None, and other integers to string representations.
+        Activity codes reference: FreeCiv server/unittools.h activity enum
         """
+        # Mapping of FreeCiv activity codes to descriptive names
+        # Based on FreeCiv common/unit.h activity enum
+        ACTIVITY_MAPPING = {
+            0: None,  # ACTIVITY_IDLE - no activity
+            1: "pollution",  # ACTIVITY_POLLUTION - cleaning pollution
+            2: "unused_road",  # Historical road building (deprecated)
+            3: "mine",  # ACTIVITY_MINE - building mine
+            4: "irrigate",  # ACTIVITY_IRRIGATE - building irrigation
+            5: "fortified",  # ACTIVITY_FORTIFIED - unit fortified
+            6: "fortress",  # ACTIVITY_FORTRESS - building fortress
+            7: "sentry",  # ACTIVITY_SENTRY - unit on sentry
+            8: "unused_railroad",  # Historical railroad (deprecated)
+            9: "pillage",  # ACTIVITY_PILLAGE - pillaging terrain
+            10: "goto",  # ACTIVITY_GOTO - moving to destination
+            11: "explore",  # ACTIVITY_EXPLORE - auto-exploring
+            12: "transform",  # ACTIVITY_TRANSFORM - transforming terrain
+            13: "unused_airbase",  # Historical airbase (deprecated)
+            14: "fortifying",  # ACTIVITY_FORTIFYING - in process of fortifying
+            15: "fallout",  # ACTIVITY_FALLOUT - cleaning nuclear fallout
+            16: "unknown",  # ACTIVITY_UNKNOWN - unknown activity
+            17: "patrol",  # ACTIVITY_PATROL - patrolling route
+            18: "convert",  # ACTIVITY_CONVERT - converting unit type
+            19: "cultivate",  # ACTIVITY_CULTIVATE - cultivating terrain
+            20: "plant",  # ACTIVITY_PLANT - planting on terrain
+            21: "gen_road",  # ACTIVITY_GEN_ROAD - generic road building
+        }
+
         if v is None:
             return None
         if isinstance(v, int):
-            # Activity code 0 means no activity/idle
-            if v == 0:
-                return None
-            # For now, convert other activity codes to strings
-            # TODO: Add mapping for activity codes to descriptive names
-            return str(v)
+            return ACTIVITY_MAPPING.get(v, f"unknown_activity_{v}")
         if isinstance(v, str):
             return v
         raise ValueError(f"Activity must be string, int, or None, got {type(v)}")
@@ -2015,11 +2038,12 @@ class FreeCivState(_GameStateBase):
             return all_actions
 
         # Score all actions for strategic importance
-        # TODO(AGE-XXX): Enhance action prioritization with FreeCiv3D strategic data
+        # TODO(AGE-196): Enhance action prioritization with FreeCiv3D strategic data
         # When available in self._raw_state (llm_optimized format):
         # - threats: Boost defensive/military actions in threatened areas
         # - opportunities: Boost expansion/settler actions for identified opportunity locations
         # - strategic_summary.military_strength: Adjust aggression vs defense based on strength
+        # See Linear issue: https://linear.app/agentclash/issue/AGE-196
         scored_actions = []
         for action in all_actions:
             score = self._calculate_action_strategic_score(action, player_id)

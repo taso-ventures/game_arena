@@ -119,7 +119,7 @@ class FreeCivUnitValidationTest(parameterized.TestCase):
     self.assertIsNone(unit.activity)
 
   def test_activity_integer_nonzero_converted_to_string(self):
-    """Test that non-zero activity integers are converted to strings."""
+    """Test that non-zero activity integers are converted to descriptive names."""
     unit = freeciv_state.FreeCivUnit(
         unit_id=1,
         owner=0,
@@ -127,9 +127,10 @@ class FreeCivUnitValidationTest(parameterized.TestCase):
         position=(10, 15),
         hp=10,
         moves_left=3,
-        activity=5,  # Some activity code
+        activity=5,  # ACTIVITY_FORTIFIED
     )
-    self.assertEqual(unit.activity, "5")
+    # Activity code 5 should map to "fortified"
+    self.assertEqual(unit.activity, "fortified")
 
   def test_activity_string_passed_through(self):
     """Test that string activities are preserved."""

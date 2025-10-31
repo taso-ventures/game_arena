@@ -462,11 +462,12 @@ class FreeCivLLMAgent(
     )
 
     # Build context-aware prompt with action context
-    # TODO(AGE-XXX): Integrate FreeCiv3D strategic guidance into action selection
+    # TODO(AGE-196): Integrate FreeCiv3D strategic guidance into action selection
     # When state._raw_state contains these fields (from llm_optimized format):
     # 1. immediate_priorities: Prioritize actions matching these suggestions
     # 2. threats: Increase defensive action scores when threats detected
     # 3. opportunities: Boost exploration/expansion actions for identified opportunities
+    # See Linear issue: https://linear.app/agentclash/issue/AGE-196
     # Example:
     #   if 'immediate_priorities' in state._raw_state:
     #       priorities = state._raw_state['immediate_priorities']

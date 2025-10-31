@@ -205,13 +205,38 @@ class UnitDict(BaseModel):
     """Convert activity int enum to string.
 
     CivCom returns activity as int (activity enum from PACKET_UNIT_INFO).
-    Value 0 means idle/no activity, which we represent as None.
-    Other int values are converted to strings.
+    Activity codes reference: FreeCiv server/unittools.h activity enum
     """
+    # Mapping of FreeCiv activity codes to descriptive names
+    ACTIVITY_MAPPING = {
+        0: None,  # ACTIVITY_IDLE - no activity
+        1: "pollution",  # ACTIVITY_POLLUTION
+        2: "unused_road",  # deprecated
+        3: "mine",  # ACTIVITY_MINE
+        4: "irrigate",  # ACTIVITY_IRRIGATE
+        5: "fortified",  # ACTIVITY_FORTIFIED
+        6: "fortress",  # ACTIVITY_FORTRESS
+        7: "sentry",  # ACTIVITY_SENTRY
+        8: "unused_railroad",  # deprecated
+        9: "pillage",  # ACTIVITY_PILLAGE
+        10: "goto",  # ACTIVITY_GOTO
+        11: "explore",  # ACTIVITY_EXPLORE
+        12: "transform",  # ACTIVITY_TRANSFORM
+        13: "unused_airbase",  # deprecated
+        14: "fortifying",  # ACTIVITY_FORTIFYING
+        15: "fallout",  # ACTIVITY_FALLOUT
+        16: "unknown",  # ACTIVITY_UNKNOWN
+        17: "patrol",  # ACTIVITY_PATROL
+        18: "convert",  # ACTIVITY_CONVERT
+        19: "cultivate",  # ACTIVITY_CULTIVATE
+        20: "plant",  # ACTIVITY_PLANT
+        21: "gen_road",  # ACTIVITY_GEN_ROAD
+    }
+
     if v is None:
       return None
     if isinstance(v, int):
-      return None if v == 0 else str(v)
+      return ACTIVITY_MAPPING.get(v, f"unknown_activity_{v}")
     return v
 
   class Config:
@@ -472,10 +497,11 @@ def extract_game_state_for_freeciv_state(
 
   # Include LLM-optimized strategy fields if present
   # These are only sent when format="llm_optimized" from FreeCiv3D
-  # TODO(AGE-XXX): Integrate strategic_summary into prompt builder for better LLM context
-  # TODO(AGE-XXX): Use immediate_priorities to guide action selection in FreeCivLLMAgent
-  # TODO(AGE-XXX): Incorporate threats into defensive action prioritization
-  # TODO(AGE-XXX): Use opportunities to guide expansion and tech research decisions
+  # TODO(AGE-196): Integrate strategic_summary into prompt builder for better LLM context
+  # TODO(AGE-196): Use immediate_priorities to guide action selection in FreeCivLLMAgent
+  # TODO(AGE-196): Incorporate threats into defensive action prioritization
+  # TODO(AGE-196): Use opportunities to guide expansion and tech research decisions
+  # See Linear issue: https://linear.app/agentclash/issue/AGE-196
   for field in ['strategic_summary', 'immediate_priorities', 'threats', 'opportunities']:
       if hasattr(state_msg, field) and getattr(state_msg, field) is not None:
           extracted[field] = getattr(state_msg, field)
