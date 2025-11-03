@@ -438,12 +438,13 @@ def extract_game_state_for_freeciv_state(
   """Extract game state in FreeCivState-compatible format.
 
   The FreeCiv3D proxy sends players, units, and cities as DICTS keyed by ID.
-  FreeCivState expects LISTS, so we convert dicts to lists here.
+  FreeCivState also expects DICTS (as of commit 49417fc), so we preserve the
+  dict structure while converting Pydantic models to plain dicts.
 
   This provides a clean separation:
   - Protocol layer: validates dict format from server
-  - Extraction layer: converts to list format
-  - Game state layer: consumes lists
+  - Extraction layer: converts Pydantic models to plain dicts (preserves structure)
+  - Game state layer: consumes dicts keyed by ID
 
   Args:
     state_msg: Validated StateUpdateResponse from parse_state_update()
@@ -455,21 +456,25 @@ def extract_game_state_for_freeciv_state(
         "phase": str,
         "game": dict (or empty dict if None),
         "map": dict (or empty dict if None),
-        "players": List[dict],  # Converted from dict
-        "units": List[dict],    # Converted from dict
-        "cities": List[dict],   # Converted from dict
+        "players": Dict[str, dict],  # Dict keyed by player ID
+        "units": Dict[str, dict],    # Dict keyed by unit ID
+        "cities": Dict[str, dict],   # Dict keyed by city ID
       }
   """
-  # Convert dicts to lists by extracting values
-  # The dict keys (ID strings) are preserved in the individual objects
-  players_list = list(state_msg.players.values())
-  units_list = list(state_msg.units.values())
-  cities_list = list(state_msg.cities.values())
-
-  # Convert Pydantic models to plain dicts
-  players_dicts = [p.model_dump(by_alias=False) for p in players_list]
-  units_dicts = [u.model_dump(by_alias=False) for u in units_list]
-  cities_dicts = [c.model_dump(by_alias=False) for c in cities_list]
+  # Keep dicts keyed by ID (dict-only format as of commit 49417fc)
+  # Convert Pydantic models to plain dicts while preserving the dict structure
+  players_dicts = {
+      player_id: p.model_dump(by_alias=False)
+      for player_id, p in state_msg.players.items()
+  }
+  units_dicts = {
+      unit_id: u.model_dump(by_alias=False)
+      for unit_id, u in state_msg.units.items()
+  }
+  cities_dicts = {
+      city_id: c.model_dump(by_alias=False)
+      for city_id, c in state_msg.cities.items()
+  }
 
   # Handle optional game and map fields (may be None in emergency fallback)
   game_dict = (
