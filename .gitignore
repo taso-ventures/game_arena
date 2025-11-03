@@ -44,7 +44,6 @@ diagnose_legal_actions.py
 test_parser_extraction.py
 test_players_conversion_integration.py
 verify_websocket_limits.py
-test_action_format.py
 
 # Development documentation (not for commit)
 ACTION_VALIDATION_FIX_SUMMARY.md

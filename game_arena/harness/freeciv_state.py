@@ -265,14 +265,13 @@ def _validate_state_structure(raw_state: Mapping[str, Any]) -> None:
     if not isinstance(raw_state["map"], dict):
         raise TypeError("'map' field must be a dictionary")
 
-    # Accept both list and dict formats for players/units/cities
-    # FreeCiv3D now sends dicts keyed by ID, but we maintain list format support
-    if not isinstance(raw_state["players"], (list, dict)):
-        raise TypeError("'players' field must be a list or dict")
-    if not isinstance(raw_state["units"], (list, dict)):
-        raise TypeError("'units' field must be a list or dict")
-    if not isinstance(raw_state["cities"], (list, dict)):
-        raise TypeError("'cities' field must be a list or dict")
+    # FreeCiv3D sends dicts keyed by ID for O(1) lookups (dict-only format)
+    if not isinstance(raw_state["players"], dict):
+        raise TypeError("'players' field must be a dict")
+    if not isinstance(raw_state["units"], dict):
+        raise TypeError("'units' field must be a dict")
+    if not isinstance(raw_state["cities"], dict):
+        raise TypeError("'cities' field must be a dict")
 
 
 def _safe_json_dumps(obj: Any, max_depth: int = MAX_JSON_DEPTH) -> str:
@@ -395,18 +394,19 @@ class FreeCivAction(BaseModel):
     )
 
     # Packet ID mappings following FreeCiv protocol
+    # Verified against freeciv3d/freeciv/freeciv/common/networking/packets.def
     PACKET_MAPPINGS: ClassVar[Dict[str, int]] = {
-        "unit_move": 31,  # PACKET_UNIT_ORDERS
-        "unit_attack": 31,  # PACKET_UNIT_ORDERS
-        "unit_fortify": 31,  # PACKET_UNIT_ORDERS
-        "unit_explore": 31,  # PACKET_UNIT_ORDERS
-        "unit_build_improvement": 31,  # PACKET_UNIT_ORDERS
-        "unit_build_city": 31,  # PACKET_UNIT_ORDERS
-        "city_production": 63,  # PACKET_CITY_CHANGE
-        "city_build_improvement": 63,  # PACKET_CITY_CHANGE
-        "city_celebrate": 63,  # PACKET_CITY_CHANGE
-        "tech_research": 87,  # PACKET_PLAYER_RESEARCH
-        "diplomacy_init": 120,  # PACKET_DIPLOMACY_INIT
+        "unit_move": 73,  # PACKET_UNIT_ORDERS
+        "unit_attack": 73,  # PACKET_UNIT_ORDERS
+        "unit_fortify": 73,  # PACKET_UNIT_ORDERS
+        "unit_explore": 73,  # PACKET_UNIT_ORDERS
+        "unit_build_improvement": 73,  # PACKET_UNIT_ORDERS
+        "unit_build_city": 73,  # PACKET_UNIT_ORDERS
+        "city_production": 35,  # PACKET_CITY_CHANGE
+        "city_build_improvement": 35,  # PACKET_CITY_CHANGE
+        "city_celebrate": 35,  # PACKET_CITY_CHANGE (same packet for all city changes)
+        "tech_research": 55,  # PACKET_PLAYER_RESEARCH
+        "diplomacy_init": 95,  # PACKET_DIPLOMACY_INIT_MEETING_REQ
         "end_turn": 52,  # PACKET_PLAYER_PHASE_DONE - signals turn completion
     }
 
@@ -1287,22 +1287,15 @@ class FreeCivState(_GameStateBase):
 
         self.map = self._parse_map(raw_state.get("map", {}))
 
-        # Convert dict format to list format for compatibility
-        # FreeCiv3D now sends dicts keyed by ID for O(1) lookups
-        players_raw = raw_state.get("players", [])
-        self.players = self._parse_players(
-            list(players_raw.values()) if isinstance(players_raw, dict) else players_raw
-        )
+        # FreeCiv3D sends dicts keyed by ID for O(1) lookups
+        players_raw = raw_state.get("players", {})
+        self.players = self._parse_players(list(players_raw.values()))
 
-        units_raw = raw_state.get("units", [])
-        self.units = self._parse_units(
-            list(units_raw.values()) if isinstance(units_raw, dict) else units_raw
-        )
+        units_raw = raw_state.get("units", {})
+        self.units = self._parse_units(list(units_raw.values()))
 
-        cities_raw = raw_state.get("cities", [])
-        self.cities = self._parse_cities(
-            list(cities_raw.values()) if isinstance(cities_raw, dict) else cities_raw
-        )
+        cities_raw = raw_state.get("cities", {})
+        self.cities = self._parse_cities(list(cities_raw.values()))
 
         self._action_cache: LRUCache = LRUCache(max_size=ACTION_CACHE_SIZE)
         self._observation_cache: LRUCache = LRUCache(max_size=OBSERVATION_CACHE_SIZE)
@@ -1885,15 +1878,14 @@ class FreeCivState(_GameStateBase):
 
         if not raw_actions:
             # Detailed diagnostic logging to understand why no actions are available
-            # Convert dict format to list for diagnostic logging
-            units_raw = self._raw_state.get('units', [])
-            units_data = list(units_raw.values()) if isinstance(units_raw, dict) else units_raw
+            units_raw = self._raw_state.get('units', {})
+            units_data = list(units_raw.values())
 
-            cities_raw = self._raw_state.get('cities', [])
-            cities_data = list(cities_raw.values()) if isinstance(cities_raw, dict) else cities_raw
+            cities_raw = self._raw_state.get('cities', {})
+            cities_data = list(cities_raw.values())
 
-            players_raw = self._raw_state.get('players', [])
-            players_data = list(players_raw.values()) if isinstance(players_raw, dict) else players_raw
+            players_raw = self._raw_state.get('players', {})
+            players_data = list(players_raw.values())
             game_data = self._raw_state.get('game', {})
 
             logger.error(

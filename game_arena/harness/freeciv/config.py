@@ -27,6 +27,8 @@ class SecurityConfig:
   websocket_close_timeout: float = 5.0  # Timeout for close operations
 
   # Input validation ranges
+  # Note: max_action_id is set conservatively high. FreeCiv3D doesn't document
+  # the actual maximum, but action IDs typically range from 0-1000 in practice.
   max_action_id: int = 999999  # Maximum valid action ID
   min_action_id: int = 0  # Minimum valid action ID
   max_player_id: int = 16  # Maximum number of players in FreeCiv
@@ -50,6 +52,7 @@ class SecurityConfig:
         max_json_size=int(os.getenv('FREECIV_MAX_JSON_SIZE', '5000000')),
         max_json_depth=int(os.getenv('FREECIV_MAX_JSON_DEPTH', '100')),
         max_websocket_size=int(os.getenv('FREECIV_MAX_WEBSOCKET_SIZE', '5000000')),
+        max_action_id=int(os.getenv('FREECIV_MAX_ACTION_ID', '999999')),
         max_player_id=int(os.getenv('FREECIV_MAX_PLAYER_ID', '16')),
     )
 
@@ -63,7 +66,7 @@ class CircuitBreakerConfig:
   after successful recovery.
   """
   failure_threshold: int = 5  # Failures before opening circuit
-  recovery_timeout: float = 60.0  # Seconds to wait before retry
+  recovery_timeout: float = 30.0  # Seconds to wait before retry (lowered for faster recovery)
   success_threshold: int = 3  # Successes needed to close circuit
 
   @classmethod
@@ -71,7 +74,7 @@ class CircuitBreakerConfig:
     """Create configuration from environment variables."""
     return cls(
         failure_threshold=int(os.getenv('FREECIV_CB_FAILURE_THRESHOLD', '5')),
-        recovery_timeout=float(os.getenv('FREECIV_CB_RECOVERY_TIMEOUT', '60.0')),
+        recovery_timeout=float(os.getenv('FREECIV_CB_RECOVERY_TIMEOUT', '30.0')),
         success_threshold=int(os.getenv('FREECIV_CB_SUCCESS_THRESHOLD', '3')),
     )
 
@@ -245,6 +248,10 @@ class ProxyClientConfig:
       raise ValueError("max_json_size must be positive")
     if self.security.max_json_depth <= 0:
       raise ValueError("max_json_depth must be positive")
+    if self.security.max_action_id <= self.security.min_action_id:
+      raise ValueError("max_action_id must be greater than min_action_id")
+    if self.security.max_player_id <= self.security.min_player_id:
+      raise ValueError("max_player_id must be greater than min_player_id")
 
     # Rate limit validations
     if self.rate_limit.requests_per_minute <= 0:
