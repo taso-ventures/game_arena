@@ -578,6 +578,27 @@ async def run_freeciv_game():
         logger.info(f"Player 2 connected successfully in {player2_auth_time:.1f}s")
         print(colored(f"[{time.time():.1f}] ✓ Player 2 connected (took {player2_auth_time:.1f}s)", "green"))
 
+        # Display observer URL early (before waiting for game_ready)
+        civserver_port = proxy1.civserver_port or 6000
+        observer_url = (
+            f"http://localhost:8080/webclient/"
+            f"?action=observe"
+            f"&renderer=webgl"
+            f"&civserverport={civserver_port}"
+            f"&civserverhost=localhost"
+            f"&multi=true"
+            f"&type=multiplayer"
+        )
+
+        print("\n" + "=" * 80, flush=True)
+        print(colored("🎮 FREECIV3D GAME INITIALIZED", "green", attrs=['bold']), flush=True)
+        print("=" * 80, flush=True)
+        print(colored(f"\n📺 OBSERVER MODE:", "cyan", attrs=['bold']), flush=True)
+        print(colored(f"   Game ID: {game_id}", "yellow"), flush=True)
+        print(colored(f"   Observer URL: {observer_url}", "green", attrs=['bold']), flush=True)
+        print(colored(f"\n   👉 Open this URL in your browser to watch the game!", "white", attrs=['bold']), flush=True)
+        print("=" * 80 + "\n", flush=True)
+
         # Wait for game_ready signal from server (event-driven with timeout)
         # FreeCiv3D will send game_ready when:
         # - All players have connected and authenticated

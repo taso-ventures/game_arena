@@ -517,41 +517,17 @@ class FreeCivLLMAgent(
       absl_logging.debug("LLM response (first 500 chars): %s", response.main_response[:500])
 
       # Use rethinking sampler if available
-      if self.sampler:
-        absl_logging.info("Illegal action generated, using rethinking sampler")
-        try:
-          # Create observation compatible with rethinking sampler
-          # CRITICAL: Pass player_id to action_to_int to prevent cross-player contamination
-          rethink_observation = {
-              "serializedGameAndState": observation.get("serializedGameAndState", ""),
-              "legalActions": [self.action_converter.action_to_int(action, state, player_id) for action in legal_actions],
-              "playerID": player_id
-          }
-
-          # Use rethinking sampler to get a valid action
-          rethink_result = await asyncio.to_thread(
-              self.sampler,
-              rethink_observation,
-              {}  # Environment info
-          )
-
-          # Convert back to FreeCivAction
-          if "submission" in rethink_result:
-            action_int = rethink_result["submission"]
-            selected_action = self.action_converter.int_to_action(action_int, state)
-            absl_logging.info("Rethinking sampler provided valid action")
-          else:
-            raise ValueError("Rethinking sampler did not return valid submission")
-
-        except Exception as e:
-          absl_logging.warning(f"Rethinking sampler failed: {e}, falling back to first legal action")
-          selected_action = legal_actions[0]
-      else:
-        # Fall back to first legal action
-        absl_logging.warning(
-            "Generated action not legal, falling back to first option"
-        )
-        selected_action = legal_actions[0]
+      # Rethinking not supported for FreeCiv dict-based observations
+      # RethinkSampler is designed for OpenSpiel pyspiel.State objects
+      # TODO(AGE-XXX): Implement proper rethinking by calling LLM with error feedback
+      absl_logging.warning(
+          f"LLM generated illegal action: {parsed_action} "
+          f"(type={parsed_action.action_type}, actor={parsed_action.actor_id}), "
+          f"falling back to first legal action"
+      )
+      selected_action = legal_actions[0] if legal_actions else None
+      if selected_action:
+        absl_logging.info(f"Using fallback action: {selected_action}")
 
     return selected_action
 
