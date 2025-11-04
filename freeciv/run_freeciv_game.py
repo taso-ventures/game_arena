@@ -229,50 +229,158 @@ async def execute_player_turn(
 
                 # Get action from agent using CACHED turn_state
                 # No need to query state again - it hasn't changed yet
-                action = await asyncio.wait_for(
-                    agent.get_action_async(turn_state, proxy, action_context=action_context),
-                    timeout=ACTION_TIMEOUT_SECONDS
-                )
+                # NEW: Retry loop with rethinking for action rejections
+                max_action_retries = 3  # Allow up to 3 retries with rethinking
+                previous_failures = []  # Track failures for rethinking
+                action_succeeded = False
 
-                if not action:
-                    logger.debug(f"Player {player_num}: No action available")
-                    if verbose:
-                        print(colored(f"  Player {player_num}: No action available", "yellow"))
-                    break
+                for action_attempt in range(max_action_retries):
+                    # Get action - normal or with rethinking
+                    if action_attempt == 0:
+                        # First attempt - normal action generation
+                        action = await asyncio.wait_for(
+                            agent.get_action_async(turn_state, proxy, action_context=action_context),
+                            timeout=ACTION_TIMEOUT_SECONDS
+                        )
+                    else:
+                        # Retry attempt - use rethinking
+                        logger.info(
+                            f"Player {player_num}: Retry attempt {action_attempt + 1} "
+                            f"with rethinking after {len(previous_failures)} failure(s)"
+                        )
+                        if verbose:
+                            print(colored(
+                                f"  🔄 Player {player_num}: Retrying with rethinking (attempt {action_attempt + 1}/{max_action_retries})",
+                                "yellow"
+                            ))
 
-                # Send action to server
-                result = await asyncio.wait_for(
-                    proxy.send_action(action),
-                    timeout=ACTION_TIMEOUT_SECONDS
-                )
-                message_count += 1  # Count action message
-                logger.debug(f"Player {player_num}: Action sent, message_count={message_count}")
+                        # Refresh state to get updated legal actions
+                        turn_state = await asyncio.wait_for(
+                            proxy.get_state(),
+                            timeout=ACTION_TIMEOUT_SECONDS
+                        )
+                        message_count += 1
+                        last_state_refresh_time = time.time()
 
-                # Brief delay after sending action to allow server processing
-                await asyncio.sleep(0.5)
+                        # Get action with rethinking
+                        from game_arena.harness.freeciv_state import FreeCivState
+                        action = await agent._generate_action_with_rethinking(
+                            observation=turn_state,
+                            state=FreeCivState.from_dict(turn_state),
+                            legal_actions=turn_state.get("legal_actions", []),
+                            previous_failures=previous_failures,
+                            max_attempts=1  # One LLM call per retry attempt
+                        )
 
-                # OPTIMIZATION: Only refresh state if action succeeded AND likely changed state
-                # Actions like tech_research don't change state immediately (research happens over turns)
-                # This reduces messages by ~60% compared to refreshing after every successful action
-                if result.get('success'):
+                        if action is None:
+                            # Rethinking failed - try fallback
+                            legal_actions = turn_state.get("legal_actions", [])
+                            if legal_actions:
+                                logger.warning(
+                                    f"Player {player_num}: Rethinking failed, "
+                                    f"falling back to first legal action"
+                                )
+                                action = legal_actions[0]
+                            else:
+                                logger.error(f"Player {player_num}: No legal actions available")
+                                break
+
+                    if not action:
+                        logger.debug(f"Player {player_num}: No action available")
+                        if verbose:
+                            print(colored(f"  Player {player_num}: No action available", "yellow"))
+                        break
+
+                    # Send action to server
+                    logger.debug(
+                        f"Player {player_num}: Sending action {action.action_type} "
+                        f"(attempt {action_attempt + 1}/{max_action_retries})"
+                    )
+
+                    result = await asyncio.wait_for(
+                        proxy.send_action(action),
+                        timeout=ACTION_TIMEOUT_SECONDS
+                    )
+                    message_count += 1  # Count action message
+
+                    # Brief delay after sending action
+                    await asyncio.sleep(0.5)
+
+                    # Check if action succeeded
+                    if result.get("success"):
+                        # Action succeeded!
+                        action_succeeded = True
+                        logger.info(
+                            f"Player {player_num}: Action {action.action_type} succeeded "
+                            f"on attempt {action_attempt + 1}"
+                        )
+                        if verbose and action_attempt > 0:
+                            print(colored(
+                                f"  ✅ Player {player_num}: Action succeeded after {action_attempt + 1} attempts",
+                                "green"
+                            ))
+                        break  # Exit retry loop
+
+                    # Action failed - check error code
+                    error_code = result.get("error_code", "UNKNOWN")
+                    error_message = result.get("error", "Unknown error")
+
+                    # Determine if we should retry with rethinking
+                    if error_code in ["E130", "E131", "E132"]:
+                        # Action processing/validation failed - retry with rethinking
+                        logger.warning(
+                            f"Player {player_num}: Action failed with {error_code}: {error_message}"
+                        )
+
+                        # Record failure for rethinking
+                        previous_failures.append({
+                            "action": action,
+                            "action_type": action.action_type,
+                            "actor_id": action.actor_id,
+                            "error_code": error_code,
+                            "server_error": error_message,
+                            "reason": f"Server rejected with {error_code}",
+                            "attempt": action_attempt + 1
+                        })
+
+                        # Continue to next retry attempt
+                        if action_attempt < max_action_retries - 1:
+                            logger.info(
+                                f"Player {player_num}: Will retry with rethinking "
+                                f"(attempt {action_attempt + 2}/{max_action_retries})"
+                            )
+                            continue
+                        else:
+                            logger.error(
+                                f"Player {player_num}: Max retries ({max_action_retries}) exceeded"
+                            )
+                            break
+                    else:
+                        # Non-retriable error or other issue
+                        logger.warning(
+                            f"Player {player_num}: Non-retriable error {error_code}: {error_message}"
+                        )
+                        break
+
+                # After retry loop - handle state refresh
+                if action_succeeded and result.get('success'):
                     action_type = action.action_type if hasattr(action, 'action_type') else None
 
                     # List of actions that immediately change game state
-                    # These actions modify units, cities, or player state and require fresh state query
                     state_changing_actions = [
                         'unit_move', 'unit_attack', 'unit_build_city', 'unit_change_homecity',
                         'unit_fortify', 'unit_sentry', 'unit_unload', 'unit_load',
                         'city_buy_production', 'city_change_production', 'city_sell_improvement',
                         'city_change_specialist', 'player_government', 'player_set_tech_goal',
-                        'tech_research',  # Tech progress changes over turns, needs state refresh
+                        'tech_research',  # Tech progress changes over turns
                         'end_turn'  # Always refresh after end_turn
                     ]
 
                     # Determine if we should refresh state
                     time_since_refresh = time.time() - last_state_refresh_time
                     should_refresh = (
-                        action_type in state_changing_actions or  # Action changes state
-                        time_since_refresh > 10.0  # Or it's been >10s since last refresh
+                        action_type in state_changing_actions or
+                        time_since_refresh > 10.0
                     )
 
                     if should_refresh:
@@ -280,22 +388,21 @@ async def execute_player_turn(
                             proxy.get_state(),
                             timeout=ACTION_TIMEOUT_SECONDS
                         )
-                        message_count += 1  # Count state refresh
+                        message_count += 1
                         last_state_refresh_time = time.time()
-                        logger.debug(f"Player {player_num}: State refreshed after {action_type}, message_count={message_count}")
-                else:
-                    # Action failed - always refresh state as it might be stale
-                    # Failed actions often indicate state mismatch (unit moved, city destroyed, etc.)
+                        logger.debug(f"Player {player_num}: State refreshed after {action_type}")
+                elif previous_failures:
+                    # Action failed after retries - refresh state
                     turn_state = await asyncio.wait_for(
                         proxy.get_state(),
                         timeout=ACTION_TIMEOUT_SECONDS
                     )
-                    message_count += 1  # Count state refresh
+                    message_count += 1
                     last_state_refresh_time = time.time()
-                    logger.debug(f"Player {player_num}: State refreshed after failed action, message_count={message_count}")
+                    logger.debug(f"Player {player_num}: State refreshed after failed action")
                     if verbose:
                         print(colored(
-                            f"    ↻ State refreshed after failed action (preventing stale cache)",
+                            f"    ↻ State refreshed after failed action",
                             "yellow"
                         ))
 

@@ -531,6 +531,154 @@ class FreeCivLLMAgent(
 
     return selected_action
 
+  async def _generate_action_with_rethinking(
+      self,
+      observation: Mapping[str, Any],
+      state: FreeCivState,
+      legal_actions: List[FreeCivAction],
+      previous_failures: List[Dict[str, Any]],
+      max_attempts: int = 3
+  ) -> Optional[FreeCivAction]:
+    """Generate action with rethinking after previous failures.
+
+    Args:
+        observation: Current game observation
+        state: FreeCivState object
+        legal_actions: List of legal FreeCivAction objects
+        previous_failures: List of previous failed actions with reasons
+        max_attempts: Maximum rethinking attempts
+
+    Returns:
+        FreeCivAction if successful, None if all attempts fail
+    """
+    absl_logging.info(
+        f"Rethinking after {len(previous_failures)} failure(s), "
+        f"attempting {max_attempts} more tries"
+    )
+
+    for attempt in range(max_attempts):
+      # Build rethinking prompt with failure context
+      rethink_prompt = self._build_rethink_prompt(
+          observation=observation,
+          state=state,
+          legal_actions=legal_actions,
+          previous_failures=previous_failures,
+          attempt_number=len(previous_failures) + attempt + 1
+      )
+
+      # Generate response with rethinking context
+      try:
+        response = await asyncio.to_thread(
+            self.model.generate_with_text_input,
+            rethink_prompt
+        )
+
+        # Log response
+        absl_logging.info(
+            f"🤖 Rethinking attempt {attempt + 1} response: "
+            f"{response.main_response[:300]}"
+        )
+
+        # Parse action from response
+        selected_action = self._parse_llm_response(
+            response.main_response, legal_actions
+        )
+
+        # Validate against legal actions
+        if selected_action in legal_actions:
+          absl_logging.info(
+              f"✅ Rethinking succeeded on attempt {attempt + 1}: "
+              f"{selected_action.action_type}(actor={selected_action.actor_id})"
+          )
+          return selected_action
+
+        # Record failure for next attempt
+        previous_failures.append({
+            "action": selected_action,
+            "action_type": selected_action.action_type,
+            "actor_id": selected_action.actor_id,
+            "reason": "Not in legal actions list",
+            "attempt": len(previous_failures) + attempt + 1
+        })
+
+        absl_logging.warning(
+            f"❌ Rethinking attempt {attempt + 1} generated illegal action: "
+            f"{selected_action.action_type}(actor={selected_action.actor_id})"
+        )
+
+      except Exception as e:
+        absl_logging.error(f"Rethinking attempt {attempt + 1} failed: {e}")
+        previous_failures.append({
+            "error": str(e),
+            "reason": "Exception during rethinking",
+            "attempt": len(previous_failures) + attempt + 1
+        })
+
+    # All rethinking attempts failed - return None
+    absl_logging.warning(
+        f"All {max_attempts} rethinking attempts failed, "
+        f"total failures: {len(previous_failures)}"
+    )
+    return None
+
+  def _build_rethink_prompt(
+      self,
+      observation: Mapping[str, Any],
+      state: FreeCivState,
+      legal_actions: List[FreeCivAction],
+      previous_failures: List[Dict[str, Any]],
+      attempt_number: int
+  ) -> str:
+    """Build prompt with rethinking context.
+
+    Includes information about previous failed actions and why they failed.
+    """
+    # Build base prompt
+    base_prompt = self._build_context_aware_prompt(
+        observation,
+        state,
+        legal_actions
+    )
+
+    # Add failure context
+    failure_context = f"\n\n⚠️ IMPORTANT: Previous Action Failures (Attempt #{attempt_number})\n"
+    failure_context += "=" * 60 + "\n"
+
+    for i, failure in enumerate(previous_failures[-3:], 1):  # Show last 3 failures
+      failure_context += f"\nFailure {i}:\n"
+
+      if "action_type" in failure:
+        failure_context += f"  Action: {failure['action_type']}"
+        if "actor_id" in failure:
+          failure_context += f"(actor={failure['actor_id']})"
+        failure_context += "\n"
+
+      if "reason" in failure:
+        failure_context += f"  Reason: {failure['reason']}\n"
+
+      if "server_error" in failure:
+        failure_context += f"  Server Error: {failure['server_error']}\n"
+
+      if "error_code" in failure:
+        failure_context += f"  Error Code: {failure['error_code']}\n"
+
+    failure_context += "\n" + "=" * 60 + "\n"
+    failure_context += "Please carefully choose a DIFFERENT action that:\n"
+    failure_context += "1. Is in the legal actions list\n"
+    failure_context += "2. Won't repeat previous failures\n"
+    failure_context += "3. Makes strategic sense for the current situation\n"
+    failure_context += "4. Uses a different unit/city if previous attempts failed\n"
+
+    # Insert failure context before response format section
+    if "RESPONSE FORMAT" in base_prompt:
+      return base_prompt.replace(
+          "\nRESPONSE FORMAT",
+          failure_context + "\n\nRESPONSE FORMAT"
+      )
+    else:
+      # Fallback: append at end
+      return base_prompt + "\n" + failure_context
+
   def _build_context_aware_prompt(
       self,
       observation: Mapping[str, Any],

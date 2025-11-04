@@ -1262,13 +1262,21 @@ class FreeCivProxyClient:
                   f"Stats: {self.message_size_limiter.get_stats(self.agent_id)}"
               )
 
+          # Track last action sent for E132 diagnostics
+          self._last_action_sent = {
+              "type": action.action_type,
+              "actor_id": action.actor_id,
+              "target": action.target,
+              "timestamp": time.time()
+          }
+
           # Log action being sent for diagnostics
           logger.info(f"📤 Sending {action.action_type} action (actor={action.actor_id})")
           await self.connection_manager.send_message(message_str)
           # Increased timeout to 60s for actions (from default 30s)
           # Actions like unit_build_city may take longer to process server-side
           response = await self._wait_for_response(
-              ["action_result", "action_accepted", "action_rejected"],
+              ["action_result", "action_accepted", "action_rejected", "error"],  # Added "error"
               timeout=60.0
           )
 
@@ -1306,6 +1314,30 @@ class FreeCivProxyClient:
                       "error_code": error_code,
                       "data": error_data
                   }
+              elif msg_type == "error":
+                  # Handle error messages from server
+                  error_data = response.get("data", {})
+                  error_code = error_data.get("code", "UNKNOWN")
+                  error_message = error_data.get("message", "Unknown error")
+
+                  # E132 = Action processing failed - treat as action rejection to enable retry
+                  # E130 = Action validation failed
+                  # E131 = Action execution failed
+                  if error_code in ["E130", "E131", "E132"]:
+                      logger.warning(
+                          f"⚠️ Server error {error_code} treated as action_rejected: {error_message}"
+                      )
+                      return {
+                          "success": False,
+                          "type": "action_rejected",
+                          "error": error_message,
+                          "error_code": error_code,
+                          "data": error_data
+                      }
+                  else:
+                      # Other errors raise exception
+                      self.circuit_breaker.record_failure()
+                      raise RuntimeError(f"Server error [{error_code}]: {error_message}")
               else:
                   # Old format or unknown - return as-is
                   return response
@@ -1866,6 +1898,10 @@ class MessageHandler:
           await self.handle_pong(message)
       elif msg_type == "conn_ping":
           await self.handle_conn_ping(message)
+      elif msg_type == "ping":
+          # Handle ping messages - route to conn_ping handler
+          # Both serve same purpose: keepalive ping from server
+          await self.handle_conn_ping(message)
       elif msg_type == "game_ready":
           await self.handle_game_ready(message)
       elif msg_type in ["welcome", "llm_connect"]:
@@ -2081,10 +2117,21 @@ class MessageHandler:
       error_message = error_data.get("message", "Unknown error")
       error_details = error_data.get("details", {})
 
-      logger.error(
-          f"❌ Server error [{error_code}]: {error_message}\n"
-          f"   Details: {error_details}"
-      )
+      # Enhanced logging for E132 (action processing failures)
+      if error_code == "E132":
+          last_action = getattr(self, '_last_action_sent', None)
+          logger.error(
+              f"❌ Server error [E132]: Action processing failed\n"
+              f"   Message: {error_message}\n"
+              f"   Details: {error_details}\n"
+              f"   Last action: {last_action}\n"
+              f"   Note: This error will be returned as action_rejected to enable retry with rethinking"
+          )
+      else:
+          logger.error(
+              f"❌ Server error [{error_code}]: {error_message}\n"
+              f"   Details: {error_details}"
+          )
 
       # Store last error in client for get_state() retry logic to access
       if self.client:
