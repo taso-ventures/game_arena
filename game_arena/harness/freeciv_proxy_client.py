@@ -878,6 +878,13 @@ class FreeCivProxyClient:
           if self.leader_name:
               auth_data["leader_name"] = self.leader_name
 
+          # Log authentication details for debugging observer mode disconnects
+          logger.info(
+              f"🔐 Authenticating: nation={self.nation or 'random'}, "
+              f"leader={self.leader_name or 'random'}, "
+              f"game_id={self.game_id}"
+          )
+
           auth_message = {
               "type": "llm_connect",
               "agent_id": self.agent_id,
@@ -1281,11 +1288,22 @@ class FreeCivProxyClient:
               elif msg_type == "action_rejected":
                   # New format - normalize to old format with error
                   error_data = response.get("data", {})
+                  error_code = error_data.get("error_code", "UNKNOWN")
+
+                  # E123 = Connection lost - raise exception to trigger reconnection
+                  # This ensures E123 errors trigger the same reconnection flow as
+                  # connection exceptions (handled in run_freeciv_game.py line 357)
+                  if error_code == "E123":
+                      self.circuit_breaker.record_failure()
+                      error_msg = error_data.get("error_message", "Server connection lost")
+                      logger.warning(f"🔌 E123 in action_rejected: {error_msg}")
+                      raise RuntimeError(f"Connection lost (E123): {error_msg}")
+
                   return {
                       "success": False,
                       "type": "action_rejected",
                       "error": error_data.get("error_message", "Action rejected"),
-                      "error_code": error_data.get("error_code", "UNKNOWN"),
+                      "error_code": error_code,
                       "data": error_data
                   }
               else:
@@ -1294,8 +1312,8 @@ class FreeCivProxyClient:
 
           # Enhanced diagnostics for no response scenario
           router_alive = (
-              self._incoming_message_router_task
-              and not self._incoming_message_router_task.done()
+              self._incoming_message_task
+              and not self._incoming_message_task.done()
           )
           logger.error(
               f"❌ No response received for action {action.action_type}. "
@@ -1362,6 +1380,14 @@ class FreeCivProxyClient:
       # "cannot call recv while another coroutine is already running" errors
       self._incoming_message_task = asyncio.create_task(
           self._incoming_message_loop()
+      )
+
+      # Log background task health for debugging reconnection issues
+      logger.info(
+          f"✅ Background tasks started: "
+          f"heartbeat={'✓' if self._heartbeat_task else '✗'}, "
+          f"processor={'✓' if self._message_processor_task else '✗'}, "
+          f"incoming={'✓' if self._incoming_message_task else '✗'}"
       )
 
   async def _stop_background_tasks(self) -> None:
