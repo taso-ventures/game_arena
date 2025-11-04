@@ -289,13 +289,20 @@ class ContextManager:
             compressed = obs.copy()
 
             # Compress units by grouping similar types
-            units = self._safe_get(compressed, "units", [])
-            if isinstance(units, list) and len(units) > self.max_units_display:
+            # Dict format migration: units are now dicts keyed by ID
+            units = self._safe_get(compressed, "units", {})
+            # Convert dict to list for uniform processing
+            if isinstance(units, dict):
+                units_list = list(units.values())
+            else:
+                units_list = units if isinstance(units, list) else []
+
+            if len(units_list) > self.max_units_display:
                 # Keep military units and unique units, summarize workers
                 military_units = []
                 other_units = []
 
-                for unit in units:
+                for unit in units_list:
                     if not isinstance(unit, dict):
                         continue
 
@@ -311,25 +318,32 @@ class ContextManager:
                     military_units[:CONFIG.MAX_MILITARY_UNITS_DISPLAY]
                     + other_units[:CONFIG.MAX_CIVILIAN_UNITS_DISPLAY]
                 )
-                if len(units) > self.max_units_display:
+                if len(units_list) > self.max_units_display:
                     compressed["units_summary"] = self._create_units_summary(
-                        len(units), len(military_units), len(other_units)
+                        len(units_list), len(military_units), len(other_units)
                     )
 
             # Compress cities by keeping largest and most strategic
-            cities = self._safe_get(compressed, "cities", [])
-            if isinstance(cities, list) and len(cities) > self.max_cities_display:
+            # Dict format migration: cities are now dicts keyed by ID
+            cities = self._safe_get(compressed, "cities", {})
+            # Convert dict to list for uniform processing
+            if isinstance(cities, dict):
+                cities_list = list(cities.values())
+            else:
+                cities_list = cities if isinstance(cities, list) else []
+
+            if len(cities_list) > self.max_cities_display:
                 # Sort by population and keep largest
-                valid_cities = [c for c in cities if isinstance(c, dict)]
+                valid_cities = [c for c in cities_list if isinstance(c, dict)]
                 sorted_cities = sorted(
                     valid_cities,
                     key=lambda c: self._safe_get(c, "pop", 0),
                     reverse=True,
                 )
                 compressed["cities"] = sorted_cities[: CONFIG.MAX_CITIES_DISPLAY]
-                if len(cities) > CONFIG.MAX_CITIES_DISPLAY:
+                if len(cities_list) > CONFIG.MAX_CITIES_DISPLAY:
                     compressed["cities_summary"] = (
-                        f"Showing {CONFIG.MAX_CITIES_DISPLAY} of {len(cities)} cities"
+                        f"Showing {CONFIG.MAX_CITIES_DISPLAY} of {len(cities_list)} cities"
                     )
 
             return compressed
@@ -441,8 +455,9 @@ class ObservationBuilder:
             summary += f"Current Ranking: {our_rank} of {len(players)} civilizations\n"
 
         # Add unit and city counts
-        units = self._safe_get(obs, "units", [])
-        cities = self._safe_get(obs, "cities", [])
+        # Dict format migration: units/cities are now dicts keyed by ID
+        units = self._safe_get(obs, "units", {})
+        cities = self._safe_get(obs, "cities", {})
         summary += f"Military: {len(units)} units, Territory: {len(cities)} cities"
 
         return summary
@@ -486,21 +501,24 @@ class ObservationBuilder:
         threats = []
 
         # Get our cities and units for threat analysis
-        our_cities = self._safe_get(obs, "cities", [])
-        all_units = self._safe_get(obs, "units", [])
+        # Dict format migration: cities/units are now dicts keyed by ID
+        our_cities = self._safe_get(obs, "cities", {})
+        all_units = self._safe_get(obs, "units", {})
 
         # Use the provided player ID
         our_player_id = player_id
 
         # Find enemy units near our cities using spatial indexing
+        # Use .values() to iterate over dict values
         enemy_units = [
-            u for u in all_units if self._safe_get(u, "owner", -1) != our_player_id
+            u for u in all_units.values() if self._safe_get(u, "owner", -1) != our_player_id
         ]
 
         # Build spatial index for efficient threat detection
         threat_index = self._build_threat_index(enemy_units)
 
-        for city in our_cities:
+        # Use .values() to iterate over dict values
+        for city in our_cities.values():
             city_pos = (self._safe_get(city, "x", 0), self._safe_get(city, "y", 0))
 
             # Get nearby threats using spatial index
@@ -550,8 +568,9 @@ class ObservationBuilder:
         # Get map and unit data
         map_data = self._safe_get(obs, "map", {})
         tiles = self._safe_get(map_data, "tiles", [])
-        all_units = self._safe_get(obs, "units", [])
-        our_cities = self._safe_get(obs, "cities", [])
+        # Dict format migration: units/cities are now dicts keyed by ID
+        all_units = self._safe_get(obs, "units", {})
+        our_cities = self._safe_get(obs, "cities", {})
 
         # Use the provided player ID
         our_player_id = player_id
@@ -576,11 +595,12 @@ class ObservationBuilder:
             opportunities.append("Territory expansion possible - scout for city sites")
 
         # Identify weak enemy units that could be attacked
+        # Use .values() to iterate over dict values
         enemy_units = [
-            u for u in all_units if self._safe_get(u, "owner", -1) != our_player_id
+            u for u in all_units.values() if self._safe_get(u, "owner", -1) != our_player_id
         ]
         our_units = [
-            u for u in all_units if self._safe_get(u, "owner", -1) == our_player_id
+            u for u in all_units.values() if self._safe_get(u, "owner", -1) == our_player_id
         ]
 
         weak_enemies = [
@@ -974,6 +994,42 @@ class FreeCivPromptBuilder(BasePromptBuilder):
                 logging.warning(f"Invalid players type: {type(players)}, replacing with empty dict")
                 obs_copy['players'] = {}
 
+        # Convert units list to dict if needed (dict-only format migration)
+        if 'units' in obs_copy:
+            units = obs_copy['units']
+            if isinstance(units, list):
+                # Convert list to dict with unit_id as key
+                units_dict = {}
+                for unit in units:
+                    if isinstance(unit, dict):
+                        # Try multiple possible ID field names
+                        unit_id = unit.get('id') or unit.get('unit_id')
+                        if unit_id is not None:
+                            units_dict[str(unit_id)] = unit
+                obs_copy['units'] = units_dict
+            elif not isinstance(units, dict):
+                # Invalid type, replace with empty dict
+                logging.warning(f"Invalid units type: {type(units)}, replacing with empty dict")
+                obs_copy['units'] = {}
+
+        # Convert cities list to dict if needed (dict-only format migration)
+        if 'cities' in obs_copy:
+            cities = obs_copy['cities']
+            if isinstance(cities, list):
+                # Convert list to dict with city_id as key
+                cities_dict = {}
+                for city in cities:
+                    if isinstance(city, dict):
+                        # Try multiple possible ID field names
+                        city_id = city.get('id') or city.get('city_id')
+                        if city_id is not None:
+                            cities_dict[str(city_id)] = city
+                obs_copy['cities'] = cities_dict
+            elif not isinstance(cities, dict):
+                # Invalid type, replace with empty dict
+                logging.warning(f"Invalid cities type: {type(cities)}, replacing with empty dict")
+                obs_copy['cities'] = {}
+
         return obs_copy
 
     def _compress_for_model(self, obs: Dict[str, Any], model_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1021,13 +1077,15 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         Returns:
             Tuple of (victory_type, progress_percentage)
         """
-        cities = obs.get('cities', [])
-        units = obs.get('units', [])
+        # Dict format migration: units/cities are now dicts keyed by ID
+        cities = obs.get('cities', {})
+        units = obs.get('units', {})
         turn = obs.get('turn', 0)
 
         city_count = len(cities)
         # Handle both integer type IDs (from proxy) and string names
-        military_units = [u for u in units if str(u.get('type', '')).lower() in CONFIG.MILITARY_UNIT_TYPES]
+        # Use .values() to iterate over dict values, not keys
+        military_units = [u for u in units.values() if str(u.get('type', '')).lower() in CONFIG.MILITARY_UNIT_TYPES]
 
         # Simple heuristics for victory type determination
         if len(military_units) >= CONFIG.MIN_MILITARY_UNITS_FOR_DOMINATION:
