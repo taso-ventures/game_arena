@@ -521,8 +521,8 @@ class FreeCivLLMAgent(
       # RethinkSampler is designed for OpenSpiel pyspiel.State objects
       # TODO(AGE-XXX): Implement proper rethinking by calling LLM with error feedback
       absl_logging.warning(
-          f"LLM generated illegal action: {parsed_action} "
-          f"(type={parsed_action.action_type}, actor={parsed_action.actor_id}), "
+          f"LLM generated illegal action: {selected_action} "
+          f"(type={selected_action.action_type}, actor={selected_action.actor_id}), "
           f"falling back to first legal action"
       )
       selected_action = legal_actions[0] if legal_actions else None

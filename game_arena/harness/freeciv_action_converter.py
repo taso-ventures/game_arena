@@ -253,7 +253,8 @@ class FreeCivActionConverter:
       source = "player"
 
     # Build target dict based on action type
-    target = {}
+    # Initialize to None (matches proxy legal action format)
+    target = None
 
     # Movement actions (unit_move, unit_attack)
     if "dest_x" in action_dict and "dest_y" in action_dict:

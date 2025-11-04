@@ -913,6 +913,11 @@ class FreeCivAction(BaseModel):
             """Remove metadata fields that don't affect game semantics."""
             return {k: v for k, v in params.items() if k not in ('description', 'priority')}
 
+        # Normalize target for comparison: treat {} and None as equivalent
+        def normalize_target(t):
+            """Normalize target for comparison: empty dict equals None."""
+            return t if t else None
+
         self_params = filter_metadata_params(self.parameters)
         other_params = filter_metadata_params(other.parameters)
 
@@ -920,7 +925,7 @@ class FreeCivAction(BaseModel):
         return (
             self.action_type == other.action_type
             and self.actor_id == other.actor_id
-            and self.target == other.target
+            and normalize_target(self.target) == normalize_target(other.target)
             and self_params == other_params
             and self.source == other.source
         )
