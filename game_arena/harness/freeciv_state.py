@@ -1602,10 +1602,10 @@ class FreeCivState(_GameStateBase):
                 population=_safe_int_conversion(
                     cdata.get("population", 0), 1000, f"population for city {city_id}"
                 ),
-                production=dict(cdata.get("production", {})),
-                specialists=dict(cdata.get("specialists", {})),
+                production=dict(cdata.get("production") or {}),
+                specialists=dict(cdata.get("specialists") or {}),
                 available_actions=actions,
-                buildings=list(cdata.get("buildings", [])),
+                buildings=list(cdata.get("buildings") or []),
                 food_storage=_safe_int_conversion(
                     cdata.get("food_storage", 0),
                     10000,
