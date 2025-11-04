@@ -46,7 +46,7 @@ def load_dotenv():
     except FileNotFoundError:
         pass  # .env file doesn't exist, use existing environment
 
-from game_arena.harness.freeciv_proxy_client import FreeCivProxyClient
+from game_arena.harness.freeciv_proxy_client import FreeCivProxyClient, CircuitBreakerState
 from game_arena.harness.freeciv_llm_agent import FreeCivLLMAgent
 from game_arena.harness.model_generation_sdk import (
     AIStudioModel,
@@ -376,6 +376,14 @@ async def execute_player_turn(
 
                         if reconnected:
                             logger.info(f"Player {player_num}: Session resumed successfully")
+
+                            # CRITICAL: Reset circuit breaker after successful reconnection
+                            # The connection is now healthy, so clear failure history
+                            proxy.circuit_breaker.failure_count = 0
+                            if proxy.circuit_breaker.state == CircuitBreakerState.OPEN:
+                                proxy.circuit_breaker.state = CircuitBreakerState.CLOSED
+                                logger.info(f"Player {player_num}: Circuit breaker reset to CLOSED after successful reconnection")
+
                             if verbose:
                                 print(colored(
                                     f"✅ Player {player_num}: Session resumed! Retrying action...",

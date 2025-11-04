@@ -1202,8 +1202,23 @@ class FreeCivProxyClient:
           asyncio.TimeoutError: If action request times out
           ValueError: If action format is invalid
       """
+      # Check connection state - attempt automatic reconnection if disconnected
       if self.connection_manager.state != ConnectionState.CONNECTED:
-          raise RuntimeError("Not connected to FreeCiv server")
+          logger.warning("Not connected, attempting automatic reconnection before send_action")
+          try:
+              reconnected = await asyncio.wait_for(
+                  self.connection_manager.reconnect_with_session(),
+                  timeout=10.0
+              )
+              if not reconnected:
+                  raise RuntimeError(
+                      f"Not connected to FreeCiv server "
+                      f"(state: {self.connection_manager.state}) "
+                      f"and reconnection failed"
+                  )
+              logger.info("✅ Auto-reconnected successfully before send_action")
+          except asyncio.TimeoutError:
+              raise RuntimeError("Not connected and reconnection timed out")
 
       # Check circuit breaker
       if not self.circuit_breaker.can_execute():
@@ -1240,8 +1255,15 @@ class FreeCivProxyClient:
                   f"Stats: {self.message_size_limiter.get_stats(self.agent_id)}"
               )
 
+          # Log action being sent for diagnostics
+          logger.info(f"📤 Sending {action.action_type} action (actor={action.actor_id})")
           await self.connection_manager.send_message(message_str)
-          response = await self._wait_for_response(["action_result", "action_accepted", "action_rejected"])
+          # Increased timeout to 60s for actions (from default 30s)
+          # Actions like unit_build_city may take longer to process server-side
+          response = await self._wait_for_response(
+              ["action_result", "action_accepted", "action_rejected"],
+              timeout=60.0
+          )
 
           if response:
               # Record success with circuit breaker
@@ -1270,9 +1292,24 @@ class FreeCivProxyClient:
                   # Old format or unknown - return as-is
                   return response
 
+          # Enhanced diagnostics for no response scenario
+          router_alive = (
+              self._incoming_message_router_task
+              and not self._incoming_message_router_task.done()
+          )
+          logger.error(
+              f"❌ No response received for action {action.action_type}. "
+              f"Connection state: {self.connection_manager.state}, "
+              f"Circuit breaker: {self.circuit_breaker.state.value}, "
+              f"Pending messages: {self._incoming_messages.qsize()}, "
+              f"Background router alive: {router_alive}"
+          )
           # Record failure if no response received
           self.circuit_breaker.record_failure()
-          raise RuntimeError("Failed to send action")
+          raise RuntimeError(
+              f"Failed to send action - no response after timeout "
+              f"(connection: {self.connection_manager.state})"
+          )
 
       except Exception as e:
           # Record failure with circuit breaker
