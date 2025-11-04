@@ -266,7 +266,7 @@ async def execute_player_turn(
                         from game_arena.harness.freeciv_state import FreeCivState
                         action = await agent._generate_action_with_rethinking(
                             observation=turn_state,
-                            state=FreeCivState.from_dict(turn_state),
+                            state=FreeCivState(turn_state),
                             legal_actions=turn_state.get("legal_actions", []),
                             previous_failures=previous_failures,
                             max_attempts=1  # One LLM call per retry attempt
