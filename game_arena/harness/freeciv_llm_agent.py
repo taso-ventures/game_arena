@@ -740,7 +740,11 @@ class FreeCivLLMAgent(
           str(e)[:100],
           self.strategy
       )
-      absl_logging.debug("Failed LLM response: %s", response_text[:500])
+      absl_logging.warning(
+          "LLM response preview: %s",
+          response_text[:300]
+      )
+      absl_logging.debug("Full LLM response: %s", response_text[:500])
 
       # Choose fallback action based on agent strategy
       selected_fallback = self._choose_strategic_fallback(legal_actions)
@@ -953,6 +957,13 @@ class FreeCivLLMAgent(
     # or agent is stuck without making progress
     max_actions = action_context.get('max_actions', 20) if action_context else 20
     if self.should_end_turn(state, player_id, max_actions):
+      absl_logging.info(
+          "⏭️ Heuristic triggered end_turn: actions=%d/%d, "
+          "queries_without_action=%d",
+          len(self.actions_this_turn),
+          max_actions,
+          self.queries_without_action
+      )
       end_turn_action = FreeCivAction(
           action_type="end_turn",
           actor_id=player_id,
@@ -1088,9 +1099,12 @@ class FreeCivLLMAgent(
 
     if new_turn > self.current_turn:
       absl_logging.info(
-          "Turn advanced: %d -> %d (reset action tracking)",
+          "🔄 Turn advanced: %d → %d (reset action tracking). "
+          "Previous turn: %d actions, %d queries without action",
           self.current_turn,
-          new_turn
+          new_turn,
+          len(self.actions_this_turn),
+          self.queries_without_action
       )
       self.current_turn = new_turn
       self.actions_this_turn = []

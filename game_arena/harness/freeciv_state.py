@@ -1552,10 +1552,10 @@ class FreeCivState(_GameStateBase):
             city_id = _safe_int_conversion(city_id_raw, MAX_CITY_ID, "city_id")
             position = (
                 _safe_int_conversion(
-                    cdata.get("x", 0), 1000, f"city {city_id} x coordinate"
+                    cdata.get("x") or 0, 1000, f"city {city_id} x coordinate"
                 ),
                 _safe_int_conversion(
-                    cdata.get("y", 0), 1000, f"city {city_id} y coordinate"
+                    cdata.get("y") or 0, 1000, f"city {city_id} y coordinate"
                 ),
             )
 

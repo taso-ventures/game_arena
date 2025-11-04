@@ -1215,6 +1215,17 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         formatted_actions.append("=" * 80)
         formatted_actions.append("")
 
+        # ALWAYS show end_turn guidance
+        formatted_actions.append("")
+        formatted_actions.append("⚠️ CRITICAL: You MUST call end_turn when you're finished with your actions.")
+        formatted_actions.append("The game only advances when BOTH players call end_turn.")
+        formatted_actions.append("")
+        formatted_actions.append("Call end_turn when:")
+        formatted_actions.append("  • You've taken most of your allowed actions")
+        formatted_actions.append("  • All your units have no movement points remaining")
+        formatted_actions.append("  • No valuable actions remain this turn")
+        formatted_actions.append("")
+
         # ADD DYNAMIC CONTEXT-AWARE INSTRUCTIONS
         if action_context:
             actions_taken = action_context.get('actions_taken', 0)
