@@ -1600,7 +1600,7 @@ class FreeCivState(_GameStateBase):
                 name=str(cdata.get("name", f"City {city_id}")),
                 position=position,
                 population=_safe_int_conversion(
-                    cdata.get("population", 0), 1000, f"population for city {city_id}"
+                    cdata.get("size", 1), 1000, f"population for city {city_id}"
                 ),
                 production=dict(cdata.get("production") or {}),
                 specialists=dict(cdata.get("specialists") or {}),
