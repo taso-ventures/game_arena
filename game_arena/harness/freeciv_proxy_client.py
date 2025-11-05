@@ -1193,6 +1193,21 @@ class FreeCivProxyClient:
                   self.circuit_breaker.record_failure()
                   raise
 
+  async def invalidate_state_cache(self) -> None:
+      """Invalidate state cache to force fresh query on next get_state().
+
+      This should be called after state-changing actions (unit_build_city,
+      unit_move, etc.) to ensure the next state query fetches current data
+      from the server instead of returning stale cached data.
+
+      The state cache has a TTL (default 5s) that can be longer than the
+      action cycle, causing agents to see stale unit/city data. Invalidating
+      the cache after actions ensures fresh state is retrieved.
+      """
+      async with self._state_cache_lock:
+          self.state_cache.clear()
+          logger.debug("State cache invalidated - next get_state() will fetch fresh data")
+
   async def send_action(self, action: FreeCivAction) -> Dict[str, Any]:
       """Send action to FreeCiv server.
 
