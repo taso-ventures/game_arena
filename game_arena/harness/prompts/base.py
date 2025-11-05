@@ -344,6 +344,9 @@ class BasePromptBuilder(ABC):
             # Claude models
             (r'^claude-3-.*', 'claude'),
             (r'^claude-2.*', 'claude'),
+            (r'^claude-haiku-.*', 'claude'),
+            (r'^claude-sonnet-.*', 'claude'),
+            (r'^claude-opus-.*', 'claude'),
 
             # DeepSeek models
             (r'^deepseek-.*', 'deepseek'),

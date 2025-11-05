@@ -143,7 +143,7 @@ def create_model(model_type: str, api_keys: dict):
         )
     elif model_type == "anthropic":
         return AnthropicModel(
-            model_name=os.getenv("ANTHROPIC_MODEL", "claude-3-sonnet-20240229"),
+            model_name=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5@20251001"),
             api_key=api_keys.get("anthropic")
         )
     else:
@@ -188,6 +188,8 @@ async def execute_player_turn(
     message_count = 0  # Track messages sent for diagnostics
     # Thread-safe: Each concurrent player turn gets isolated local variable
     last_state_refresh_time = 0  # Track when we last refreshed state
+    # Track executed unit_build_city actions to prevent duplicates (gateway bug workaround)
+    executed_build_city_units = set()  # Set of unit IDs that have built cities this turn
 
     try:
         if verbose:
@@ -235,11 +237,30 @@ async def execute_player_turn(
                 action_succeeded = False
 
                 for action_attempt in range(max_action_retries):
+                    # Filter out already-executed unit_build_city actions (gateway bug workaround)
+                    # The gateway is slow to update legal_actions, so we track locally
+                    filtered_state = turn_state.copy()
+                    if executed_build_city_units and 'legal_actions' in filtered_state:
+                        original_count = len(filtered_state['legal_actions'])
+                        filtered_state['legal_actions'] = [
+                            action for action in filtered_state['legal_actions']
+                            if not (
+                                action.get('type') == 'unit_build_city' and
+                                action.get('unit_id') in executed_build_city_units
+                            )
+                        ]
+                        filtered_count = len(filtered_state['legal_actions'])
+                        if filtered_count < original_count:
+                            logger.debug(
+                                f"Player {player_num}: Filtered {original_count - filtered_count} "
+                                f"unit_build_city actions (units: {executed_build_city_units})"
+                            )
+
                     # Get action - normal or with rethinking
                     if action_attempt == 0:
                         # First attempt - normal action generation
                         action = await asyncio.wait_for(
-                            agent.get_action_async(turn_state, proxy, action_context=action_context),
+                            agent.get_action_async(filtered_state, proxy, action_context=action_context),
                             timeout=ACTION_TIMEOUT_SECONDS
                         )
                     else:
@@ -262,12 +283,24 @@ async def execute_player_turn(
                         message_count += 1
                         last_state_refresh_time = time.time()
 
+                        # Re-apply filter after state refresh (the filter at loop start
+                        # was applied to the old turn_state, we need to filter the new one)
+                        filtered_state = turn_state.copy()
+                        if executed_build_city_units and 'legal_actions' in filtered_state:
+                            filtered_state['legal_actions'] = [
+                                action_dict for action_dict in filtered_state['legal_actions']
+                                if not (
+                                    action_dict.get('type') == 'unit_build_city' and
+                                    action_dict.get('unit_id') in executed_build_city_units
+                                )
+                            ]
+
                         # Get action with rethinking
                         from game_arena.harness.freeciv_state import FreeCivState
                         action = await agent._generate_action_with_rethinking(
-                            observation=turn_state,
-                            state=FreeCivState(turn_state),
-                            legal_actions=turn_state.get("legal_actions", []),
+                            observation=filtered_state,
+                            state=FreeCivState(filtered_state),
+                            legal_actions=filtered_state.get("legal_actions", []),
                             previous_failures=previous_failures,
                             max_attempts=1  # One LLM call per retry attempt
                         )
@@ -319,6 +352,31 @@ async def execute_player_turn(
                                 f"  ✅ Player {player_num}: Action succeeded after {action_attempt + 1} attempts",
                                 "green"
                             ))
+
+                        # Invalidate state cache after state-changing actions
+                        # to ensure next get_state() fetches fresh data
+                        state_changing_actions = [
+                            'unit_build_city',  # City built, settler consumed
+                            'unit_move',  # Unit position changes
+                            'city_production',  # City production queue changes
+                            'tech_research',  # Tech progress changes
+                            'end_turn'  # Turn advances
+                        ]
+                        if action.action_type in state_changing_actions:
+                            await proxy.invalidate_state_cache()
+                            logger.debug(
+                                f"Player {player_num}: Cache invalidated after {action.action_type}"
+                            )
+
+                        # Track executed unit_build_city to prevent duplicates
+                        # (workaround for gateway bug where legal_actions update slowly)
+                        if action.action_type == 'unit_build_city' and action.actor_id:
+                            executed_build_city_units.add(action.actor_id)
+                            logger.debug(
+                                f"Player {player_num}: Tracking unit {action.actor_id} "
+                                f"as executed build_city (total tracked: {len(executed_build_city_units)})"
+                            )
+
                         break  # Exit retry loop
 
                     # Action failed - check error code
