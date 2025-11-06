@@ -289,13 +289,20 @@ class ContextManager:
             compressed = obs.copy()
 
             # Compress units by grouping similar types
-            units = self._safe_get(compressed, "units", [])
-            if isinstance(units, list) and len(units) > self.max_units_display:
+            # Dict format migration: units are now dicts keyed by ID
+            units = self._safe_get(compressed, "units", {})
+            # Convert dict to list for uniform processing
+            if isinstance(units, dict):
+                units_list = list(units.values())
+            else:
+                units_list = units if isinstance(units, list) else []
+
+            if len(units_list) > self.max_units_display:
                 # Keep military units and unique units, summarize workers
                 military_units = []
                 other_units = []
 
-                for unit in units:
+                for unit in units_list:
                     if not isinstance(unit, dict):
                         continue
 
@@ -311,25 +318,32 @@ class ContextManager:
                     military_units[:CONFIG.MAX_MILITARY_UNITS_DISPLAY]
                     + other_units[:CONFIG.MAX_CIVILIAN_UNITS_DISPLAY]
                 )
-                if len(units) > self.max_units_display:
+                if len(units_list) > self.max_units_display:
                     compressed["units_summary"] = self._create_units_summary(
-                        len(units), len(military_units), len(other_units)
+                        len(units_list), len(military_units), len(other_units)
                     )
 
             # Compress cities by keeping largest and most strategic
-            cities = self._safe_get(compressed, "cities", [])
-            if isinstance(cities, list) and len(cities) > self.max_cities_display:
+            # Dict format migration: cities are now dicts keyed by ID
+            cities = self._safe_get(compressed, "cities", {})
+            # Convert dict to list for uniform processing
+            if isinstance(cities, dict):
+                cities_list = list(cities.values())
+            else:
+                cities_list = cities if isinstance(cities, list) else []
+
+            if len(cities_list) > self.max_cities_display:
                 # Sort by population and keep largest
-                valid_cities = [c for c in cities if isinstance(c, dict)]
+                valid_cities = [c for c in cities_list if isinstance(c, dict)]
                 sorted_cities = sorted(
                     valid_cities,
                     key=lambda c: self._safe_get(c, "pop", 0),
                     reverse=True,
                 )
                 compressed["cities"] = sorted_cities[: CONFIG.MAX_CITIES_DISPLAY]
-                if len(cities) > CONFIG.MAX_CITIES_DISPLAY:
+                if len(cities_list) > CONFIG.MAX_CITIES_DISPLAY:
                     compressed["cities_summary"] = (
-                        f"Showing {CONFIG.MAX_CITIES_DISPLAY} of {len(cities)} cities"
+                        f"Showing {CONFIG.MAX_CITIES_DISPLAY} of {len(cities_list)} cities"
                     )
 
             return compressed
@@ -441,8 +455,9 @@ class ObservationBuilder:
             summary += f"Current Ranking: {our_rank} of {len(players)} civilizations\n"
 
         # Add unit and city counts
-        units = self._safe_get(obs, "units", [])
-        cities = self._safe_get(obs, "cities", [])
+        # Dict format migration: units/cities are now dicts keyed by ID
+        units = self._safe_get(obs, "units", {})
+        cities = self._safe_get(obs, "cities", {})
         summary += f"Military: {len(units)} units, Territory: {len(cities)} cities"
 
         return summary
@@ -486,21 +501,24 @@ class ObservationBuilder:
         threats = []
 
         # Get our cities and units for threat analysis
-        our_cities = self._safe_get(obs, "cities", [])
-        all_units = self._safe_get(obs, "units", [])
+        # Dict format migration: cities/units are now dicts keyed by ID
+        our_cities = self._safe_get(obs, "cities", {})
+        all_units = self._safe_get(obs, "units", {})
 
         # Use the provided player ID
         our_player_id = player_id
 
         # Find enemy units near our cities using spatial indexing
+        # Use .values() to iterate over dict values
         enemy_units = [
-            u for u in all_units if self._safe_get(u, "owner", -1) != our_player_id
+            u for u in all_units.values() if self._safe_get(u, "owner", -1) != our_player_id
         ]
 
         # Build spatial index for efficient threat detection
         threat_index = self._build_threat_index(enemy_units)
 
-        for city in our_cities:
+        # Use .values() to iterate over dict values
+        for city in our_cities.values():
             city_pos = (self._safe_get(city, "x", 0), self._safe_get(city, "y", 0))
 
             # Get nearby threats using spatial index
@@ -550,8 +568,9 @@ class ObservationBuilder:
         # Get map and unit data
         map_data = self._safe_get(obs, "map", {})
         tiles = self._safe_get(map_data, "tiles", [])
-        all_units = self._safe_get(obs, "units", [])
-        our_cities = self._safe_get(obs, "cities", [])
+        # Dict format migration: units/cities are now dicts keyed by ID
+        all_units = self._safe_get(obs, "units", {})
+        our_cities = self._safe_get(obs, "cities", {})
 
         # Use the provided player ID
         our_player_id = player_id
@@ -576,11 +595,12 @@ class ObservationBuilder:
             opportunities.append("Territory expansion possible - scout for city sites")
 
         # Identify weak enemy units that could be attacked
+        # Use .values() to iterate over dict values
         enemy_units = [
-            u for u in all_units if self._safe_get(u, "owner", -1) != our_player_id
+            u for u in all_units.values() if self._safe_get(u, "owner", -1) != our_player_id
         ]
         our_units = [
-            u for u in all_units if self._safe_get(u, "owner", -1) == our_player_id
+            u for u in all_units.values() if self._safe_get(u, "owner", -1) == our_player_id
         ]
 
         weak_enemies = [
@@ -860,7 +880,23 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         compressed_obs = self._compress_for_model(obs_dict, model_config)
 
         # Build strategic analysis components
-        strategic_summary = self._build_strategic_summary(compressed_obs, current_player_id)
+        # Use pre-computed strategic_summary from FreeCiv3D Gateway if available
+        # FreeCiv3D's LLM Gateway provides strategic analysis in state_update messages:
+        # - strategic_summary: { cities_count, units_count, tech_progress, military_strength }
+        # - immediate_priorities: List of strategic recommendations
+        # - threats: Current military/economic/diplomatic threats
+        # - opportunities: Strategic opportunities (expansion, resources, tech advantages)
+        if 'strategic_summary' in compressed_obs and compressed_obs['strategic_summary']:
+            # Use gateway's strategic analysis
+            strategic_summary = self._format_gateway_strategic_summary(
+                compressed_obs['strategic_summary'],
+                compressed_obs.get('immediate_priorities', []),
+                compressed_obs.get('threats', []),
+                compressed_obs.get('opportunities', [])
+            )
+        else:
+            # Fallback to local computation if gateway data unavailable
+            strategic_summary = self._build_strategic_summary(compressed_obs, current_player_id)
         prioritized_actions = self._build_prioritized_actions(
             legal_actions, action_context=action_context
         )
@@ -958,6 +994,42 @@ class FreeCivPromptBuilder(BasePromptBuilder):
                 logging.warning(f"Invalid players type: {type(players)}, replacing with empty dict")
                 obs_copy['players'] = {}
 
+        # Convert units list to dict if needed (dict-only format migration)
+        if 'units' in obs_copy:
+            units = obs_copy['units']
+            if isinstance(units, list):
+                # Convert list to dict with unit_id as key
+                units_dict = {}
+                for unit in units:
+                    if isinstance(unit, dict):
+                        # Try multiple possible ID field names
+                        unit_id = unit.get('id') or unit.get('unit_id')
+                        if unit_id is not None:
+                            units_dict[str(unit_id)] = unit
+                obs_copy['units'] = units_dict
+            elif not isinstance(units, dict):
+                # Invalid type, replace with empty dict
+                logging.warning(f"Invalid units type: {type(units)}, replacing with empty dict")
+                obs_copy['units'] = {}
+
+        # Convert cities list to dict if needed (dict-only format migration)
+        if 'cities' in obs_copy:
+            cities = obs_copy['cities']
+            if isinstance(cities, list):
+                # Convert list to dict with city_id as key
+                cities_dict = {}
+                for city in cities:
+                    if isinstance(city, dict):
+                        # Try multiple possible ID field names
+                        city_id = city.get('id') or city.get('city_id')
+                        if city_id is not None:
+                            cities_dict[str(city_id)] = city
+                obs_copy['cities'] = cities_dict
+            elif not isinstance(cities, dict):
+                # Invalid type, replace with empty dict
+                logging.warning(f"Invalid cities type: {type(cities)}, replacing with empty dict")
+                obs_copy['cities'] = {}
+
         return obs_copy
 
     def _compress_for_model(self, obs: Dict[str, Any], model_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1005,13 +1077,15 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         Returns:
             Tuple of (victory_type, progress_percentage)
         """
-        cities = obs.get('cities', [])
-        units = obs.get('units', [])
+        # Dict format migration: units/cities are now dicts keyed by ID
+        cities = obs.get('cities', {})
+        units = obs.get('units', {})
         turn = obs.get('turn', 0)
 
         city_count = len(cities)
         # Handle both integer type IDs (from proxy) and string names
-        military_units = [u for u in units if str(u.get('type', '')).lower() in CONFIG.MILITARY_UNIT_TYPES]
+        # Use .values() to iterate over dict values, not keys
+        military_units = [u for u in units.values() if str(u.get('type', '')).lower() in CONFIG.MILITARY_UNIT_TYPES]
 
         # Simple heuristics for victory type determination
         if len(military_units) >= CONFIG.MIN_MILITARY_UNITS_FOR_DOMINATION:
@@ -1028,6 +1102,60 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             progress = min(100, (city_count * 50) + (len(units) * 10))
 
         return victory_type, progress
+
+    def _format_gateway_strategic_summary(
+        self,
+        strategic_summary: Dict[str, Any],
+        immediate_priorities: List[str],
+        threats: List[Dict[str, Any]],
+        opportunities: List[Dict[str, Any]]
+    ) -> str:
+        """Format strategic analysis from FreeCiv3D Gateway.
+
+        Args:
+            strategic_summary: Strategic metrics from gateway
+                {cities_count, units_count, tech_progress, military_strength}
+            immediate_priorities: List of recommended strategic priorities
+            threats: List of threat objects {type, severity, description}
+            opportunities: List of opportunity objects {type, value, description}
+
+        Returns:
+            Formatted strategic summary string
+        """
+        parts = []
+
+        # Strategic metrics
+        parts.append("=== Strategic Overview ===")
+        parts.append(f"Cities: {strategic_summary.get('cities_count', 'N/A')}")
+        parts.append(f"Units: {strategic_summary.get('units_count', 'N/A')}")
+        parts.append(f"Technology Progress: {strategic_summary.get('tech_progress', 'N/A')}")
+        parts.append(f"Military Strength: {strategic_summary.get('military_strength', 'N/A')}")
+
+        # Immediate priorities
+        if immediate_priorities:
+            parts.append("\n=== Immediate Priorities ===")
+            for i, priority in enumerate(immediate_priorities, 1):
+                parts.append(f"{i}. {priority}")
+
+        # Threats
+        if threats:
+            parts.append("\n=== Current Threats ===")
+            for threat in threats:
+                threat_type = threat.get('type', 'Unknown')
+                severity = threat.get('severity', 'Unknown')
+                desc = threat.get('description', '')
+                parts.append(f"[{severity}] {threat_type}: {desc}")
+
+        # Opportunities
+        if opportunities:
+            parts.append("\n=== Strategic Opportunities ===")
+            for opp in opportunities:
+                opp_type = opp.get('type', 'Unknown')
+                value = opp.get('value', 'Unknown')
+                desc = opp.get('description', '')
+                parts.append(f"[Value: {value}] {opp_type}: {desc}")
+
+        return "\n".join(parts)
 
     def _build_strategic_summary(self, obs: Dict[str, Any], player_id: int) -> str:
         """Build strategic summary of current situation.
@@ -1064,23 +1192,38 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             priority = self._get_action_priority(action)
             action_groups[priority].append(action)
 
-        # Format prioritized actions with CANONICAL FORMAT for LLM to copy
+        # Format prioritized actions with JSON FORMAT for LLM to copy
         formatted_actions = []
         formatted_actions.append("\n" + "=" * 80)
         formatted_actions.append("RESPONSE FORMAT REQUIREMENTS")
         formatted_actions.append("=" * 80)
         formatted_actions.append("")
-        formatted_actions.append("⚠️  CRITICAL: Respond with ONLY the action string, nothing else!")
+        formatted_actions.append("⚠️  CRITICAL: Respond with ONLY a JSON object, nothing else!")
         formatted_actions.append("")
-        formatted_actions.append("✅ CORRECT format:")
-        formatted_actions.append("   unit_move_settlers(101)_to(2,3)")
+        formatted_actions.append("✅ CORRECT format examples:")
+        formatted_actions.append('   {"type": "unit_build_city", "unit_id": 101}')
+        formatted_actions.append('   {"type": "unit_move", "unit_id": 102, "dest_x": 15, "dest_y": 20}')
+        formatted_actions.append('   {"type": "tech_research", "tech_name": "alphabet"}')
+        formatted_actions.append('   {"type": "end_turn"}')
         formatted_actions.append("")
-        formatted_actions.append("❌ WRONG format (adds explanation):")
-        formatted_actions.append("   I will move my settlers: unit_move_settlers(101)_to(2,3)")
+        formatted_actions.append("❌ WRONG formats:")
+        formatted_actions.append("   unit_build_city_unit(101)  ← String format not supported")
+        formatted_actions.append("   I will build: {...}  ← Extra text not allowed")
         formatted_actions.append("")
-        formatted_actions.append("Copy EXACTLY one action string from the list below.")
-        formatted_actions.append("Do NOT add reasoning, explanations, or extra text.")
+        formatted_actions.append("Copy EXACTLY one JSON action from the list below.")
+        formatted_actions.append("Do NOT add reasoning, explanations, markdown, or extra text.")
         formatted_actions.append("=" * 80)
+        formatted_actions.append("")
+
+        # ALWAYS show end_turn guidance
+        formatted_actions.append("")
+        formatted_actions.append("⚠️ CRITICAL: You MUST call end_turn when you're finished with your actions.")
+        formatted_actions.append("The game only advances when BOTH players call end_turn.")
+        formatted_actions.append("")
+        formatted_actions.append("Call end_turn when:")
+        formatted_actions.append("  • You've taken most of your allowed actions")
+        formatted_actions.append("  • All your units have no movement points remaining")
+        formatted_actions.append("  • No valuable actions remain this turn")
         formatted_actions.append("")
 
         # ADD DYNAMIC CONTEXT-AWARE INSTRUCTIONS
@@ -1115,12 +1258,12 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             priority_name = ActionPriority(priority).name.title().replace('_', ' ')
             formatted_actions.append(f"\n{priority_name} Priority:")
 
-            # Show top 10 actions per priority with full canonical format
+            # Show top 10 actions per priority in JSON format
             for i, action in enumerate(actions[:10], 1):
-                # Get canonical string that LLM should copy exactly
-                canonical = self._action_to_canonical_string(action)
+                # Get JSON representation that LLM should copy exactly
+                json_repr = self._action_to_json(action)
                 impact = self._assess_action_impact(action)
-                formatted_actions.append(f"{i}. {canonical}")
+                formatted_actions.append(f"{i}. {json_repr}")
                 formatted_actions.append(f"   Impact: {impact}")
 
         return "\n".join(formatted_actions)
@@ -1167,6 +1310,46 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             return "REQUIRED: Call this when you have no more valuable actions to take this turn. Both players must end_turn for the game to advance."
         else:
             return "Variable impact: Situation dependent"
+
+    def _action_to_json(self, action: FreeCivAction) -> str:
+        """Convert FreeCivAction to JSON string format for prompt display.
+
+        This generates a JSON representation that matches the format LLMs should
+        output when selecting an action. The JSON format is unambiguous, easy to
+        parse, and matches the structure of legal_actions from the gateway.
+
+        Args:
+            action: FreeCivAction to convert
+
+        Returns:
+            JSON string representation of the action
+        """
+        import json
+
+        # Build JSON dict with action-type-specific fields
+        json_dict = {"type": action.action_type}
+
+        # Add actor_id field based on source
+        if action.source == "unit":
+            json_dict["unit_id"] = action.actor_id
+        elif action.source == "city":
+            json_dict["city_id"] = action.actor_id
+        # Player-level actions (tech_research, end_turn) don't need actor_id
+
+        # Add target fields based on action type
+        if action.target:
+            if "x" in action.target and "y" in action.target:
+                # Movement action
+                json_dict["dest_x"] = action.target["x"]
+                json_dict["dest_y"] = action.target["y"]
+            elif "value" in action.target:
+                # Tech research or city production
+                if action.action_type == "tech_research":
+                    json_dict["tech_name"] = str(action.target["value"]).lower()
+                elif action.action_type == "city_production":
+                    json_dict["production_type"] = str(action.target["value"]).lower()
+
+        return json.dumps(json_dict)
 
     def _action_to_canonical_string(self, action: FreeCivAction) -> str:
         """Convert FreeCivAction to canonical string format for prompt display.

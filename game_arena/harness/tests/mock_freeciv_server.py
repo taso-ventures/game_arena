@@ -48,49 +48,103 @@ class MockFreeCivServer:
         self.recorded_messages: List[Dict[str, Any]] = []  # For test verification
 
     def _get_default_game_state(self) -> Dict[str, Any]:
-        """Get a default game state for testing."""
+        """Get a default game state for testing.
+
+        Returns protocol-compliant state_update message matching FreeCiv3D
+        format. Players, units, cities are DICTS keyed by ID (Option A).
+
+        Field type coercion:
+        - nation: sent as string (coerced from int in CivCom)
+        - activity: sent as None for idle (0), string for others
+        """
         return {
             "type": "state_update",
-            "timestamp": int(time.time()),
-            "data": {
-                "turn": self.turn_counter,
-                "phase": "movement",
-                "current_player": 1,
-                "observation": {
-                    "strategic": {
-                        "victory_progress": 15,
-                        "tech_tree_position": "bronze_working",
-                        "relative_score": 100,
-                    },
-                    "tactical": {
-                        "unit_positions": [
-                            {"id": 101, "x": 1, "y": 1, "type": "settlers"}
-                        ],
-                        "threat_assessment": "low",
-                        "exploration_status": "initial",
-                    },
-                    "economic": {
-                        "city_production": [
-                            {"id": 301, "name": "Athens", "producing": "warrior"}
-                        ],
-                        "resource_flow": {"gold": 50, "science": 10},
-                        "trade_routes": [],
-                    },
+            "timestamp": time.time(),
+            "turn": self.turn_counter,
+            "phase": "movement",
+            "player_id": 0,  # Player perspective (real server includes this)
+            "format": "full",
+            "cached": False,
+            # Game metadata
+            "game": {
+                "ruleset": "classic",
+                "difficulty": "easy",
+                "victory_conditions": ["conquest", "space_race"],
+            },
+            # Map information
+            "map": {
+                "width": 80,
+                "height": 50,
+                "topology": "wrapx",
+            },
+            # Players as DICT keyed by player_id (actual server format)
+            "players": {
+                "0": {
+                    "playerno": 0,
+                    "id": 0,
+                    "name": "TestPlayer",
+                    "nation": "18",  # String (coerced from int nation ID)
+                    "is_alive": True,
+                    "is_ai": False,
+                    "gold": 50,
+                    "science": 10,
+                    "government": "despotism",
+                    "researching": "alphabet",
                 },
-                "legal_actions": [
-                    {
-                        "action_type": "unit_move",
-                        "actor_id": 101,
-                        "target": {"x": 2, "y": 1},
-                        "parameters": {},
-                    },
-                    {
-                        "action_type": "unit_move",
-                        "actor_id": 101,
-                        "target": {"x": 1, "y": 2},
-                        "parameters": {},
-                    },
-                ],
+                "1": {
+                    "playerno": 1,
+                    "id": 1,
+                    "name": "AI Player",
+                    "nation": "408",  # String (coerced from int nation ID)
+                    "is_alive": True,
+                    "is_ai": True,
+                    "gold": 40,
+                    "science": 8,
+                    "government": "despotism",
+                    "researching": "pottery",
+                },
+            },
+            # Units as DICT keyed by unit_id (actual server format)
+            "units": {
+                "101": {
+                    "id": 101,
+                    "unit_id": 101,  # Real server includes both id and unit_id
+                    "type": "settlers",
+                    "owner": 0,
+                    "x": 1,
+                    "y": 1,
+                    "movesleft": 3,
+                    "hp": 20,
+                    "veteran_level": 0,
+                    "activity": None,  # None = idle (coerced from int 0)
+                },
+                "102": {
+                    "id": 102,
+                    "unit_id": 102,  # Real server includes both id and unit_id
+                    "type": "warrior",
+                    "owner": 1,
+                    "x": 10,
+                    "y": 10,
+                    "movesleft": 1,
+                    "hp": 10,
+                    "veteran_level": 0,
+                    "activity": "2",  # String (coerced from int activity enum)
+                },
+            },
+            # Cities as DICT keyed by city_id (actual server format)
+            "cities": {
+                "301": {
+                    "id": 301,
+                    "city_id": 301,  # Real server includes both id and city_id
+                    "name": "Athens",
+                    "owner": 0,
+                    "x": 5,
+                    "y": 5,
+                    "size": 3,
+                    "production": "warrior",
+                    "food_stock": 10,
+                    "shield_stock": 5,
+                },
             },
         }
 
@@ -205,17 +259,25 @@ class MockFreeCivServer:
         """Handle state query request."""
         format_type = data.get("format", "llm_optimized")
 
-        # Update turn counter for dynamic testing
-        self.game_state["data"]["turn"] = self.turn_counter
-        self.game_state["timestamp"] = int(time.time())
+        # Update turn counter and timestamp for dynamic testing
+        self.game_state["turn"] = self.turn_counter
+        self.game_state["timestamp"] = time.time()
 
         response = self.game_state.copy()
         if format_type == "minimal":
-            # Return minimal state for specific tests
-            response["data"] = {
+            # Return minimal state for specific tests (still protocol-compliant)
+            response = {
+                "type": "state_update",
                 "turn": self.turn_counter,
                 "phase": "movement",
-                "current_player": 1,
+                "format": "minimal",
+                "cached": False,
+                "timestamp": time.time(),
+                "game": {},
+                "map": {},
+                "players": {},  # Dicts (Option A format)
+                "units": {},
+                "cities": {},
             }
 
         await websocket.send(json.dumps(response))

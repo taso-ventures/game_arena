@@ -166,20 +166,20 @@ class FreeCivStateSynchronizer:
     if not isinstance(turn, int) or turn < 0:
       raise ValueError(f"Invalid turn number: {turn}")
 
-    # Validate players data
-    players = state_data.get("players", [])
-    if not isinstance(players, list):
-      raise ValueError("Players data must be a list")
+    # Validate players data (dict-only format as of commit 49417fc)
+    players = state_data.get("players", {})
+    if not isinstance(players, dict):
+      raise ValueError("Players data must be a dict")
 
-    # Validate units data
-    units = state_data.get("units", [])
-    if not isinstance(units, list):
-      raise ValueError("Units data must be a list")
+    # Validate units data (dict-only format as of commit 49417fc)
+    units = state_data.get("units", {})
+    if not isinstance(units, dict):
+      raise ValueError("Units data must be a dict")
 
-    # Validate cities data
-    cities = state_data.get("cities", [])
-    if not isinstance(cities, list):
-      raise ValueError("Cities data must be a list")
+    # Validate cities data (dict-only format as of commit 49417fc)
+    cities = state_data.get("cities", {})
+    if not isinstance(cities, dict):
+      raise ValueError("Cities data must be a dict")
 
     logging.debug(
         "State data validated: turn=%d, players=%d, units=%d, cities=%d",

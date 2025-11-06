@@ -14,9 +14,14 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, TypedDict, Union
 
 import websockets
+from pydantic import ValidationError
 from websockets.client import WebSocketClientProtocol
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
+from game_arena.harness.freeciv_protocol_models import (
+    extract_game_state_for_freeciv_state,
+    parse_state_update,
+)
 from game_arena.harness.freeciv_state import FreeCivAction
 
 logger = logging.getLogger(__name__)
@@ -780,6 +785,8 @@ class FreeCivProxyClient:
       self.nation = nation
       self.leader_name = leader_name or self.agent_id
       self.civserver_port = None  # Will be set from auth_success response
+      self.session_id = None  # Will be set from auth_success response
+      self.last_disconnect_time = None  # Track disconnect time for session resumption
 
       # Connection management - construct WebSocket URL for LLM Gateway
       ws_url = f"ws://{host}:{port}/ws/agent/{self.agent_id}"
@@ -798,6 +805,7 @@ class FreeCivProxyClient:
       self.message_handler = MessageHandler(client=self)
       self.message_queue = MessageQueue()
       self.protocol_translator = ProtocolTranslator()
+      self._incoming_messages: asyncio.Queue = asyncio.Queue()  # Queue for routing incoming messages
 
       # State management
       self.player_id: Optional[int] = None
@@ -812,6 +820,7 @@ class FreeCivProxyClient:
       # Background tasks
       self._heartbeat_task: Optional[asyncio.Task] = None
       self._message_processor_task: Optional[asyncio.Task] = None
+      self._incoming_message_task: Optional[asyncio.Task] = None
 
       # Circuit breaker for API failure handling
       self.circuit_breaker = CircuitBreaker(
@@ -869,6 +878,13 @@ class FreeCivProxyClient:
           if self.leader_name:
               auth_data["leader_name"] = self.leader_name
 
+          # Log authentication details for debugging observer mode disconnects
+          logger.info(
+              f"🔐 Authenticating: nation={self.nation or 'random'}, "
+              f"leader={self.leader_name or 'random'}, "
+              f"game_id={self.game_id}"
+          )
+
           auth_message = {
               "type": "llm_connect",
               "agent_id": self.agent_id,
@@ -895,6 +911,8 @@ class FreeCivProxyClient:
                   (data_section.get("type") == "auth_success" or data_section.get("success") == True)):
                   self.player_id = data_section.get("player_id")
                   self.civserver_port = data_section.get("civserver_port")  # Store civserver port for spectator URLs
+                  self.session_id = data_section.get("session_id")  # Store session ID for resumption
+                  self.connection_manager.session_id = self.session_id  # Sync with ConnectionManager for reconnection
                   logger.info(
                       f"Successfully authenticated as player {self.player_id} on civserver port {self.civserver_port}"
                   )
@@ -959,10 +977,32 @@ class FreeCivProxyClient:
 
       # Clear state
       self.player_id = None
+      self.session_id = None
+      self.connection_manager.session_id = None  # Sync with ConnectionManager
 
       # Protect cache clear with async lock
       async with self._state_cache_lock:
           self.state_cache.clear()
+
+  async def reconnect_with_session(self) -> bool:
+      """Reconnect with session resumption (convenience wrapper).
+
+      This is a convenience method that delegates to the connection_manager's
+      reconnect_with_session() method. It provides a cleaner API for session
+      resumption after disconnection.
+
+      Note: Before calling this method, you must set:
+          proxy.connection_manager.last_disconnect_time = time.time()
+
+      Returns:
+          True if reconnection succeeded, False otherwise
+
+      Example:
+          proxy.connection_manager.last_disconnect_time = time.time()
+          if await proxy.reconnect_with_session():
+              print("Session resumed successfully!")
+      """
+      return await self.connection_manager.reconnect_with_session()
 
   async def wait_for_game_ready(self, timeout: float = 30.0) -> bool:
       """Wait for game_ready signal from server with timeout.
@@ -1098,6 +1138,20 @@ class FreeCivProxyClient:
               # Check if we received a valid state_update
               if response and response.get("type") == "state_update":
                   logger.debug("STATE_UPDATE received successfully")
+
+                  # Parse and validate response with protocol models
+                  try:
+                      state_msg = parse_state_update(response)
+                      game_state = extract_game_state_for_freeciv_state(state_msg)
+                  except ValidationError as e:
+                      logger.error(f"Protocol validation failed: {e}")
+                      self.circuit_breaker.record_failure()
+                      raise RuntimeError(f"Invalid state_update from server: {e}")
+                  except Exception as e:
+                      logger.error(f"Failed to extract game state: {e}")
+                      self.circuit_breaker.record_failure()
+                      raise RuntimeError(f"Failed to process state_update: {e}")
+
                   # Record success with circuit breaker
                   self.circuit_breaker.record_success()
 
@@ -1109,11 +1163,11 @@ class FreeCivProxyClient:
                           oldest_key, _ = self.state_cache.popitem(last=False)
                           logger.debug(f"Evicted LRU cache entry: {oldest_key}")
 
-                      # Cache the response with timestamp
-                      self.state_cache[cache_key] = {**response, "_timestamp": current_time}
+                      # Cache the extracted game state with timestamp
+                      self.state_cache[cache_key] = {**game_state, "_timestamp": current_time}
 
                   self.last_state_update = current_time
-                  return response
+                  return game_state
 
               # No valid response - retry if attempts remain
               if attempt < max_retries - 1:
@@ -1139,6 +1193,21 @@ class FreeCivProxyClient:
                   self.circuit_breaker.record_failure()
                   raise
 
+  async def invalidate_state_cache(self) -> None:
+      """Invalidate state cache to force fresh query on next get_state().
+
+      This should be called after state-changing actions (unit_build_city,
+      unit_move, etc.) to ensure the next state query fetches current data
+      from the server instead of returning stale cached data.
+
+      The state cache has a TTL (default 5s) that can be longer than the
+      action cycle, causing agents to see stale unit/city data. Invalidating
+      the cache after actions ensures fresh state is retrieved.
+      """
+      async with self._state_cache_lock:
+          self.state_cache.clear()
+          logger.debug("State cache invalidated - next get_state() will fetch fresh data")
+
   async def send_action(self, action: FreeCivAction) -> Dict[str, Any]:
       """Send action to FreeCiv server.
 
@@ -1155,8 +1224,23 @@ class FreeCivProxyClient:
           asyncio.TimeoutError: If action request times out
           ValueError: If action format is invalid
       """
+      # Check connection state - attempt automatic reconnection if disconnected
       if self.connection_manager.state != ConnectionState.CONNECTED:
-          raise RuntimeError("Not connected to FreeCiv server")
+          logger.warning("Not connected, attempting automatic reconnection before send_action")
+          try:
+              reconnected = await asyncio.wait_for(
+                  self.connection_manager.reconnect_with_session(),
+                  timeout=10.0
+              )
+              if not reconnected:
+                  raise RuntimeError(
+                      f"Not connected to FreeCiv server "
+                      f"(state: {self.connection_manager.state}) "
+                      f"and reconnection failed"
+                  )
+              logger.info("✅ Auto-reconnected successfully before send_action")
+          except asyncio.TimeoutError:
+              raise RuntimeError("Not connected and reconnection timed out")
 
       # Check circuit breaker
       if not self.circuit_breaker.can_execute():
@@ -1165,7 +1249,7 @@ class FreeCivProxyClient:
       # Check rate limiter and apply exponential backoff if needed
       await self._enforce_rate_limit()
 
-      # Convert action to packet format
+      # Convert action to packet format (gateway action format, not binary packets)
       packet = self.protocol_translator.to_freeciv_packet(action)
 
       action_request = {
@@ -1173,6 +1257,13 @@ class FreeCivProxyClient:
           "agent_id": self.agent_id,
           "data": packet,
       }
+
+      # Debug logging for action structure (helps diagnose protocol issues)
+      logger.debug(
+          f"📤 Sending {action.action_type} action: "
+          f"type={packet.get('type')}, player_id={packet.get('player_id')}, "
+          f"fields={list(packet.keys())}"
+      )
 
       # Send directly for now (message queue can be used for batching later)
       try:
@@ -1186,8 +1277,23 @@ class FreeCivProxyClient:
                   f"Stats: {self.message_size_limiter.get_stats(self.agent_id)}"
               )
 
+          # Track last action sent for E132 diagnostics
+          self._last_action_sent = {
+              "type": action.action_type,
+              "actor_id": action.actor_id,
+              "target": action.target,
+              "timestamp": time.time()
+          }
+
+          # Log action being sent for diagnostics
+          logger.info(f"📤 Sending {action.action_type} action (actor={action.actor_id})")
           await self.connection_manager.send_message(message_str)
-          response = await self._wait_for_response(["action_result", "action_accepted", "action_rejected"])
+          # Increased timeout to 60s for actions (from default 30s)
+          # Actions like unit_build_city may take longer to process server-side
+          response = await self._wait_for_response(
+              ["action_result", "action_accepted", "action_rejected", "error"],  # Added "error"
+              timeout=60.0
+          )
 
           if response:
               # Record success with circuit breaker
@@ -1205,20 +1311,70 @@ class FreeCivProxyClient:
               elif msg_type == "action_rejected":
                   # New format - normalize to old format with error
                   error_data = response.get("data", {})
+                  error_code = error_data.get("error_code", "UNKNOWN")
+
+                  # E123 = Connection lost - raise exception to trigger reconnection
+                  # This ensures E123 errors trigger the same reconnection flow as
+                  # connection exceptions (handled in run_freeciv_game.py line 357)
+                  if error_code == "E123":
+                      self.circuit_breaker.record_failure()
+                      error_msg = error_data.get("error_message", "Server connection lost")
+                      logger.warning(f"🔌 E123 in action_rejected: {error_msg}")
+                      raise RuntimeError(f"Connection lost (E123): {error_msg}")
+
                   return {
                       "success": False,
                       "type": "action_rejected",
                       "error": error_data.get("error_message", "Action rejected"),
-                      "error_code": error_data.get("error_code", "UNKNOWN"),
+                      "error_code": error_code,
                       "data": error_data
                   }
+              elif msg_type == "error":
+                  # Handle error messages from server
+                  error_data = response.get("data", {})
+                  error_code = error_data.get("code", "UNKNOWN")
+                  error_message = error_data.get("message", "Unknown error")
+
+                  # E132 = Action processing failed - treat as action rejection to enable retry
+                  # E130 = Action validation failed
+                  # E131 = Action execution failed
+                  if error_code in ["E130", "E131", "E132"]:
+                      logger.warning(
+                          f"⚠️ Server error {error_code} treated as action_rejected: {error_message}"
+                      )
+                      return {
+                          "success": False,
+                          "type": "action_rejected",
+                          "error": error_message,
+                          "error_code": error_code,
+                          "data": error_data
+                      }
+                  else:
+                      # Other errors raise exception
+                      self.circuit_breaker.record_failure()
+                      raise RuntimeError(f"Server error [{error_code}]: {error_message}")
               else:
                   # Old format or unknown - return as-is
                   return response
 
+          # Enhanced diagnostics for no response scenario
+          router_alive = (
+              self._incoming_message_task
+              and not self._incoming_message_task.done()
+          )
+          logger.error(
+              f"❌ No response received for action {action.action_type}. "
+              f"Connection state: {self.connection_manager.state}, "
+              f"Circuit breaker: {self.circuit_breaker.state.value}, "
+              f"Pending messages: {self._incoming_messages.qsize()}, "
+              f"Background router alive: {router_alive}"
+          )
           # Record failure if no response received
           self.circuit_breaker.record_failure()
-          raise RuntimeError("Failed to send action")
+          raise RuntimeError(
+              f"Failed to send action - no response after timeout "
+              f"(connection: {self.connection_manager.state})"
+          )
 
       except Exception as e:
           # Record failure with circuit breaker
@@ -1261,10 +1417,24 @@ class FreeCivProxyClient:
       )
 
   async def _start_background_tasks(self) -> None:
-      """Start background tasks for heartbeat and message processing."""
+      """Start background tasks for heartbeat, message processing, and incoming message handling."""
       self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
       self._message_processor_task = asyncio.create_task(
           self._message_processor_loop()
+      )
+      # Incoming message loop is the SINGLE consumer of WebSocket messages
+      # It routes all messages through self._incoming_messages queue to prevent
+      # "cannot call recv while another coroutine is already running" errors
+      self._incoming_message_task = asyncio.create_task(
+          self._incoming_message_loop()
+      )
+
+      # Log background task health for debugging reconnection issues
+      logger.info(
+          f"✅ Background tasks started: "
+          f"heartbeat={'✓' if self._heartbeat_task else '✗'}, "
+          f"processor={'✓' if self._message_processor_task else '✗'}, "
+          f"incoming={'✓' if self._incoming_message_task else '✗'}"
       )
 
   async def _stop_background_tasks(self) -> None:
@@ -1279,6 +1449,10 @@ class FreeCivProxyClient:
       if self._message_processor_task and not self._message_processor_task.done():
           self._message_processor_task.cancel()
           tasks.append(self._message_processor_task)
+
+      if self._incoming_message_task and not self._incoming_message_task.done():
+          self._incoming_message_task.cancel()
+          tasks.append(self._incoming_message_task)
 
       # Wait for all tasks with timeout
       if tasks:
@@ -1344,6 +1518,41 @@ class FreeCivProxyClient:
           except Exception as e:
               logger.warning(f"Message processing error: {e}")
 
+  async def _incoming_message_loop(self) -> None:
+      """Background loop to actively consume incoming server messages.
+
+      This is the SINGLE consumer of the WebSocket. It reads all incoming messages
+      and routes them to an asyncio.Queue for processing by _wait_for_response().
+
+      This loop is critical for:
+      1. Preventing "cannot call recv while another coroutine is already running recv" errors
+      2. Ensuring conn_ping messages are consumed even when no active request is pending
+      3. Handling messages asynchronously without blocking other operations
+
+      Messages are placed in self._incoming_messages queue for consumption by other methods.
+      """
+      while self.connection_manager.state == ConnectionState.CONNECTED:
+          try:
+              # Receive message with short timeout to allow periodic state checks
+              message = await asyncio.wait_for(
+                  self.connection_manager.receive_message(), timeout=1.0
+              )
+
+              if message:
+                  # Put message into queue for processing (non-blocking)
+                  await self._incoming_messages.put(message)
+
+          except asyncio.TimeoutError:
+              # Timeout is expected - allows us to check connection state periodically
+              continue
+          except asyncio.CancelledError:
+              logger.debug("Incoming message loop cancelled")
+              break
+          except Exception as e:
+              logger.warning(f"Incoming message loop error: {e}")
+              # Brief delay before retrying to prevent tight error loops
+              await asyncio.sleep(0.1)
+
   async def _send_message_to_server(self, message: Dict[str, Any]) -> None:
       """Send message to server via WebSocket.
 
@@ -1389,8 +1598,10 @@ class FreeCivProxyClient:
               return None
 
           try:
+              # Read from incoming message queue instead of directly from WebSocket
+              # This prevents "cannot call recv while another coroutine is already running" errors
               response = await asyncio.wait_for(
-                  self.connection_manager.receive_message(), timeout=1.0
+                  self._incoming_messages.get(), timeout=1.0
               )
               if response:
                   # Skip non-JSON messages (heartbeats, status updates, etc.)
@@ -1407,7 +1618,7 @@ class FreeCivProxyClient:
                       if data.get("type") in expected_types:
                           return data
                       else:
-                          # Handle other message types
+                          # Handle other message types (including conn_ping)
                           await self.message_handler.handle_message(data)
                   except (ValueError, json.JSONDecodeError) as e:
                       # Only warn for messages that looked like JSON but failed to parse
@@ -1463,6 +1674,10 @@ class ConnectionManager:
       self.state = ConnectionState.DISCONNECTED
       self.reconnect_attempts = 0
       self.last_error: Optional[Exception] = None
+
+      # Session management for FreeCiv3D session resumption
+      self.session_id: Optional[str] = None
+      self.last_disconnect_time: Optional[float] = None
 
   async def connect(self) -> bool:
       """Establish WebSocket connection.
@@ -1541,6 +1756,44 @@ class ConnectionManager:
       await asyncio.sleep(backoff_delay)
 
       return await self.connect()
+
+  async def reconnect_with_session(self) -> bool:
+      """Attempt to reconnect using existing session ID within resumption window.
+
+      FreeCiv3D supports session resumption within 60 seconds of disconnect.
+      This method attempts to reuse the existing session instead of creating a new one.
+
+      Returns:
+          True if reconnection and session resumption successful, False otherwise
+      """
+      # Check if we have a session to resume
+      if not self.session_id:
+          logger.warning("No session_id available for session resumption")
+          return await self.reconnect()
+
+      # Check if we're within the 60s resumption window
+      if self.last_disconnect_time:
+          time_since_disconnect = time.time() - self.last_disconnect_time
+          if time_since_disconnect > 60.0:
+              logger.warning(
+                  f"Session resumption window expired ({time_since_disconnect:.1f}s > 60s), "
+                  "performing full reconnect"
+              )
+              self.session_id = None  # Clear stale session
+              return await self.reconnect()
+
+      logger.info(f"Attempting session resumption with session_id: {self.session_id}")
+
+      # For now, FreeCiv3D handles session resumption automatically when we reconnect
+      # with the same agent_id within the window. Just do a normal reconnect.
+      # The session will be preserved on the server side.
+      success = await self.reconnect()
+
+      if not success:
+          logger.warning("Session resumption reconnect failed")
+          self.session_id = None  # Clear failed session
+
+      return success
 
   def _calculate_backoff(self, attempt: int) -> float:
       """Calculate exponential backoff delay.
@@ -1659,6 +1912,10 @@ class MessageHandler:
       elif msg_type == "pong":
           await self.handle_pong(message)
       elif msg_type == "conn_ping":
+          await self.handle_conn_ping(message)
+      elif msg_type == "ping":
+          # Handle ping messages - route to conn_ping handler
+          # Both serve same purpose: keepalive ping from server
           await self.handle_conn_ping(message)
       elif msg_type == "game_ready":
           await self.handle_game_ready(message)
@@ -1875,10 +2132,21 @@ class MessageHandler:
       error_message = error_data.get("message", "Unknown error")
       error_details = error_data.get("details", {})
 
-      logger.error(
-          f"❌ Server error [{error_code}]: {error_message}\n"
-          f"   Details: {error_details}"
-      )
+      # Enhanced logging for E132 (action processing failures)
+      if error_code == "E132":
+          last_action = getattr(self, '_last_action_sent', None)
+          logger.error(
+              f"❌ Server error [E132]: Action processing failed\n"
+              f"   Message: {error_message}\n"
+              f"   Details: {error_details}\n"
+              f"   Last action: {last_action}\n"
+              f"   Note: This error will be returned as action_rejected to enable retry with rethinking"
+          )
+      else:
+          logger.error(
+              f"❌ Server error [{error_code}]: {error_message}\n"
+              f"   Details: {error_details}"
+          )
 
       # Store last error in client for get_state() retry logic to access
       if self.client:
@@ -1914,40 +2182,105 @@ class ProtocolTranslator:
       """Convert FreeCivAction to FreeCiv3D WebSocket action format.
 
       This converts to the JSON action format expected by the FreeCiv3D LLM Gateway,
-      which goes in the 'data' field of action messages. This is NOT the FreeCiv
-      binary packet format with 'pid' field.
+      which goes in the 'data' field of action messages.
 
-      FreeCiv3D WebSocket action format:
-      {
-        'action_type': 'unit_move',
-        'actor_id': 42,
-        'target': {'x': 11, 'y': 21},
-        'parameters': {}
-      }
-
-      The FreeCiv3D proxy handles conversion to civserver binary packets internally.
+      Each action type has a specific canonical format required by the gateway.
+      See docs/GAME_ARENA_ACTION_REFERENCE.md Section 2.2 for complete specs.
 
       Args:
           action: FreeCivAction to convert
 
       Returns:
-          Action dictionary for FreeCiv3D WebSocket protocol 'data' field
+          Action dictionary in canonical format for FreeCiv3D WebSocket protocol
+
+      Raises:
+          ValueError: If action type is unknown or required fields are missing
       """
-      # Build base action structure
-      packet = {
-          "action_type": action.action_type,
-          "actor_id": action.actor_id,
-      }
+      action_type = action.action_type
 
-      # Add target if present (including empty dicts)
-      if action.target is not None:
-          packet["target"] = action.target
+      # tech_research: Extract tech name from target and use canonical format
+      # Gateway expects: {"type": "tech_research", "tech_name": "alphabet"}
+      # See GAME_ARENA_ACTION_REFERENCE.md lines 305-309
+      if action_type == "tech_research":
+          tech_name = action.target.get("value") if action.target else None
+          if not tech_name:
+              raise ValueError(
+                  "tech_research requires tech name in target.value"
+              )
+          return {
+              "type": "tech_research",
+              "tech_name": tech_name.lower(),  # Gateway requires lowercase
+          }
 
-      # Add parameters if present (including empty dicts)
-      if action.parameters is not None:
-          packet["parameters"] = action.parameters
+      # unit_move: Extract coordinates and use canonical format
+      # Gateway expects: {"type": "unit_move", "unit_id": 42, "dest_x": 15, "dest_y": 20}
+      # See GAME_ARENA_ACTION_REFERENCE.md lines 62-70
+      elif action_type == "unit_move":
+          if not action.target or "x" not in action.target or "y" not in action.target:
+              raise ValueError(
+                  "unit_move requires target with x and y coordinates"
+              )
+          return {
+              "type": "unit_move",
+              "unit_id": action.actor_id,
+              "dest_x": action.target["x"],
+              "dest_y": action.target["y"],
+          }
 
-      return packet
+      # city_production: Extract production type and use canonical format
+      # Gateway expects: {"type": "city_production", "city_id": 1, "production_type": "warrior"}
+      # See GAME_ARENA_ACTION_REFERENCE.md lines 276-283
+      elif action_type == "city_production":
+          # Try parameters first, then target.value
+          prod_type = None
+          if action.parameters:
+              prod_type = action.parameters.get("production_type")
+          if not prod_type and action.target:
+              prod_type = action.target.get("value")
+          if not prod_type:
+              raise ValueError(
+                  "city_production requires production_type in parameters or target.value"
+              )
+          return {
+              "type": "city_production",
+              "city_id": action.actor_id,
+              "production_type": prod_type.lower(),  # Gateway requires lowercase
+          }
+
+      # end_turn: No additional fields needed (gateway handles via session)
+      # Gateway expects: {"type": "end_turn"}
+      # See GAME_ARENA_ACTION_REFERENCE.md lines 342-346
+      elif action_type == "end_turn":
+          return {"type": "end_turn"}
+
+      # All other unit actions: Simple unit_id format
+      # Gateway expects: {"type": "unit_XXXX", "unit_id": 42}
+      # Includes: unit_explore, unit_fortify, unit_sentry, unit_build_road,
+      #           unit_build_irrigation, unit_build_mine, unit_build_city
+      # See GAME_ARENA_ACTION_REFERENCE.md Section 1
+      elif action_type in [
+          "unit_explore",
+          "unit_fortify",
+          "unit_sentry",
+          "unit_build_road",
+          "unit_build_irrigation",
+          "unit_build_mine",
+          "unit_build_city",
+      ]:
+          return {
+              "type": action_type,
+              "unit_id": action.actor_id,
+          }
+
+      # Unknown action type
+      else:
+          raise ValueError(
+              f"Unknown or unsupported action type: {action_type}. "
+              f"Supported types: tech_research, unit_move, city_production, "
+              f"end_turn, unit_explore, unit_fortify, unit_sentry, "
+              f"unit_build_road, unit_build_irrigation, unit_build_mine, "
+              f"unit_build_city"
+          )
 
   def from_freeciv_packet(self, packet: Dict[str, Any]) -> Dict[str, Any]:
       """Convert FreeCiv packet to Game Arena format.
