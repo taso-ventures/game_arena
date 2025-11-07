@@ -774,3 +774,301 @@ async def _post_requests_async_return_first_success(
         await asyncio.gather(*tasks, return_exceptions=True)
 
         return successful_result, error_infos
+
+
+class OllamaModel(model_generation.MultimodalModel):
+    """Wrapper for local Ollama API access.
+    
+    Ollama provides local LLM inference with models like Llama, Mistral, etc.
+    By default connects to http://localhost:11434, but can be configured via
+    OLLAMA_BASE_URL environment variable or base_url parameter.
+    
+    Example usage:
+        model = OllamaModel(model_name="llama3.2")
+        model = OllamaModel(model_name="llama3.2:70b", base_url="http://192.168.1.100:11434")
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        model_options: Mapping[str, Any] | None = None,
+        api_options: Mapping[str, Any] | None = None,
+        base_url: str | None = None,
+    ):
+        super().__init__(
+            model_name, model_options=model_options, api_options=api_options
+        )
+        # If base_url is None, use OLLAMA_BASE_URL env var or default to localhost
+        if base_url is None:
+            base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        self._base_url = base_url.rstrip("/")
+        self._api_url = f"{self._base_url}/api/generate"
+        self._chat_url = f"{self._base_url}/api/chat"
+
+    def _generate(
+        self,
+        content: Sequence[Mapping[str, Any]],
+        system_instruction: str | None = None,
+    ) -> tournament_util.GenerateReturn:
+        """Generate using Ollama chat endpoint."""
+        messages = []
+        if system_instruction is not None:
+            messages.append({"role": "system", "content": system_instruction})
+        
+        # Convert content to messages format
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    messages.append({"role": "user", "content": item.get("text", "")})
+                elif item.get("type") == "image_url":
+                    # Ollama supports images in messages
+                    messages.append({
+                        "role": "user",
+                        "content": item.get("text", ""),
+                        "images": [item["image_url"]["url"]]
+                    })
+            elif isinstance(item, str):
+                messages.append({"role": "user", "content": item})
+
+        if self._model_options is None:
+            self._model_options = {}
+        if self._api_options is None:
+            self._api_options = {}
+
+        # Build Ollama request
+        request = {
+            "model": self._model_name,
+            "messages": messages,
+            "stream": False,
+        }
+
+        # Add optional parameters
+        options = {}
+        if "temperature" in self._model_options:
+            options["temperature"] = self._model_options["temperature"]
+        if "top_k" in self._model_options:
+            options["top_k"] = self._model_options["top_k"]
+        if "top_p" in self._model_options:
+            options["top_p"] = self._model_options["top_p"]
+        if "max_tokens" in self._model_options:
+            options["num_predict"] = self._model_options["max_tokens"]
+        
+        if options:
+            request["options"] = options
+
+        try:
+            timeout = self._api_options.get("timeout", 300)
+            response = requests.post(
+                self._chat_url,
+                json=request,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            completion = response.json()
+
+            # Extract content from response
+            response_content = completion.get("message", {}).get("content", "")
+            if response_content is None:
+                logging.warning(
+                    "Ollama completion returned None content. Returning empty string."
+                    " Request: %s",
+                    request,
+                )
+                response_content = ""
+
+            # Extract token counts if available
+            generation_tokens = None
+            prompt_tokens = None
+            if "eval_count" in completion:
+                generation_tokens = completion["eval_count"]
+            if "prompt_eval_count" in completion:
+                prompt_tokens = completion["prompt_eval_count"]
+
+            return tournament_util.GenerateReturn(
+                main_response=response_content,
+                main_response_and_thoughts="",
+                request_for_logging=request,
+                response_for_logging=completion,
+                generation_tokens=generation_tokens,
+                prompt_tokens=prompt_tokens,
+            )
+
+        except requests.exceptions.RequestException as e:
+            logging.exception("Request to Ollama failed: %s", e)
+            raise
+
+    def generate_with_text_input(
+        self, model_input: tournament_util.ModelTextInput
+    ) -> tournament_util.GenerateReturn:
+        content = [{"type": "text", "text": model_input.prompt_text}]
+        return self._generate(content, model_input.system_instruction)
+
+    def generate_with_image_text_input(
+        self, model_input: tournament_util.ModelImageTextInput
+    ) -> tournament_util.GenerateReturn:
+        content = _create_image_text_content(model_input)
+        return self._generate(content, model_input.system_instruction)
+
+
+class HuggingFaceModel(model_generation.MultimodalModel):
+    """Wrapper for HuggingFace Inference API.
+    
+    Supports both HuggingFace Inference API (serverless) and Inference Endpoints.
+    Requires HF_TOKEN environment variable or api_key parameter.
+    
+    For local inference with transformers library, consider using Ollama or vLLM instead.
+    
+    Example usage:
+        model = HuggingFaceModel(model_name="meta-llama/Llama-3.2-3B-Instruct")
+        model = HuggingFaceModel(
+            model_name="meta-llama/Llama-3.2-70B-Instruct",
+            api_key="hf_...",
+            use_inference_endpoint=True,
+            endpoint_url="https://your-endpoint.endpoints.huggingface.cloud"
+        )
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        model_options: Mapping[str, Any] | None = None,
+        api_options: Mapping[str, Any] | None = None,
+        api_key: str | None = None,
+        use_inference_endpoint: bool = False,
+        endpoint_url: str | None = None,
+    ):
+        super().__init__(
+            model_name, model_options=model_options, api_options=api_options
+        )
+        
+        # Get API key from parameter or environment
+        if api_key is None:
+            api_key = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+        
+        if api_key is None:
+            raise ValueError(
+                "HuggingFace API key not found. Set HF_TOKEN environment variable "
+                "or pass api_key parameter."
+            )
+        
+        self._headers = {"Authorization": f"Bearer {api_key}"}
+        self._use_inference_endpoint = use_inference_endpoint
+        
+        # Determine API URL
+        if use_inference_endpoint and endpoint_url:
+            self._api_url = endpoint_url.rstrip("/")
+        elif use_inference_endpoint:
+            raise ValueError(
+                "endpoint_url must be provided when use_inference_endpoint=True"
+            )
+        else:
+            # Use serverless Inference API
+            self._api_url = (
+                f"https://api-inference.huggingface.co/models/{model_name}"
+            )
+
+    def _generate(
+        self,
+        content: Sequence[Mapping[str, Any]],
+        system_instruction: str | None = None,
+    ) -> tournament_util.GenerateReturn:
+        """Generate using HuggingFace Inference API."""
+        messages = []
+        if system_instruction is not None:
+            messages.append({"role": "system", "content": system_instruction})
+        
+        # Convert content to text
+        user_content = ""
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                user_content += item.get("text", "")
+            elif isinstance(item, str):
+                user_content += item
+        
+        messages.append({"role": "user", "content": user_content})
+
+        if self._model_options is None:
+            self._model_options = {}
+        if self._api_options is None:
+            self._api_options = {}
+
+        # Build request parameters
+        parameters = {}
+        if "max_tokens" in self._model_options:
+            parameters["max_new_tokens"] = self._model_options["max_tokens"]
+        if "temperature" in self._model_options:
+            parameters["temperature"] = self._model_options["temperature"]
+        if "top_k" in self._model_options:
+            parameters["top_k"] = self._model_options["top_k"]
+        if "top_p" in self._model_options:
+            parameters["top_p"] = self._model_options["top_p"]
+        
+        parameters["return_full_text"] = False
+
+        request = {
+            "inputs": user_content,
+            "parameters": parameters,
+        }
+
+        try:
+            timeout = self._api_options.get("timeout", 300)
+            response = requests.post(
+                self._api_url,
+                json=request,
+                headers=self._headers,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            completion = response.json()
+
+            # Handle different response formats
+            response_text = ""
+            if isinstance(completion, list) and len(completion) > 0:
+                result = completion[0]
+                response_text = result.get("generated_text", "")
+            elif isinstance(completion, dict):
+                response_text = completion.get("generated_text", "")
+
+            if not response_text:
+                logging.warning(
+                    "HuggingFace completion returned empty content. Request: %s",
+                    request,
+                )
+                response_text = ""
+
+            # Normalize completion to dict for logging
+            completion_dict = completion if isinstance(completion, dict) else {"results": completion}
+
+            return tournament_util.GenerateReturn(
+                main_response=response_text,
+                main_response_and_thoughts="",
+                request_for_logging=_sanitize_request_for_logging(request),
+                response_for_logging=completion_dict,
+                generation_tokens=None,  # HF API doesn't always return token counts
+                prompt_tokens=None,
+            )
+
+        except requests.exceptions.RequestException as e:
+            logging.exception("Request to HuggingFace failed: %s", e)
+            raise
+
+    def generate_with_text_input(
+        self, model_input: tournament_util.ModelTextInput
+    ) -> tournament_util.GenerateReturn:
+        content = [{"type": "text", "text": model_input.prompt_text}]
+        return self._generate(content, model_input.system_instruction)
+
+    def generate_with_image_text_input(
+        self, model_input: tournament_util.ModelImageTextInput
+    ) -> tournament_util.GenerateReturn:
+        # HuggingFace Inference API has limited multimodal support
+        # Fall back to text-only for now
+        logging.warning(
+            "HuggingFace model %s may not support image input via Inference API. "
+            "Using text-only.",
+            self._model_name,
+        )
+        content = [{"type": "text", "text": model_input.prompt_text}]
+        return self._generate(content, model_input.system_instruction)

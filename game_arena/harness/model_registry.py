@@ -29,6 +29,8 @@ class ModelRegistry(enum.Enum):
     GEMINI_2_5_FLASH = "gemini-2.5-flash"
     GEMINI_2_5_PRO = "gemini-2.5-pro"
     KIMI_K2 = "moonshotai/Kimi-K2-Instruct"
+    LLAMA_3_2_3B = "llama3.2:3b"
+    LLAMA_3_2_70B = "llama3.2:70b"
     OPENAI_GPT_4_1 = "gpt-4.1-2025-04-14"
     OPENAI_O3 = "o3-2025-04-16"
     OPENAI_O4_MINI = "o4-mini-2025-04-16"
@@ -114,6 +116,13 @@ class ModelRegistry(enum.Enum):
                 return model_generation_http.XAIModel(
                     model_name=self.value,
                     api_key=api_key,
+                    **kwargs,
+                )
+            case ModelRegistry.LLAMA_3_2_3B | ModelRegistry.LLAMA_3_2_70B:
+                # Ollama models for local inference
+                # API key is ignored for local Ollama, but parameter is kept for consistency
+                return model_generation_http.OllamaModel(
+                    model_name=self.value,
                     **kwargs,
                 )
             case _:
