@@ -81,25 +81,31 @@ python scripts/run_game.py freeciv --check_setup
 The Game Arena now includes a sophisticated LLM-powered agent for FreeCiv3D with advanced features:
 
 **Features:**
-- 🎮 Six strategic approaches (balanced, aggressive, economic, defensive, science, opportunistic)
-- 🧠 Token-aware memory management with model-specific tokenization
-- 🔄 Rethinking sampler for illegal move recovery
-- 📊 Production telemetry and monitoring
-- 🐳 Complete Docker-based testing infrastructure
+- 🚀 **Local model support via Ollama, HuggingFace, xAI, and Together.AI**
 
 **Quick Start:**
 ```bash
-# Start mock FreeCiv3D server for testing
-docker-compose -f docker-compose.e2e.yml up -d freeciv3d
+# Run with OpenAI/Gemini (requires API keys)
+python freeciv/run_freeciv_game.py --player1=gemini --player2=openai --turns=50
 
-# Run the FreeCiv LLM agent
-python3 -m game_arena.harness.freeciv_llm_agent \
-  --config config/freeciv_agent.yaml \
-  --player-id 1
+# Run with local Ollama models (NO API COSTS!)
+./run_ollama_game.sh llama3.2:3b llama3.2:3b 50
 
-# Run end-to-end tests
-./scripts/run-e2e-tests.sh
+# Run with xAI Grok
+export XAI_API_KEY=your_key_here
+python freeciv/run_freeciv_game.py --player1=xai --player2=xai --turns=50
 ```
+
+**Supported Model Providers:**
+- **OpenAI** (GPT-4, GPT-5, O3, O4-mini)
+- **Google** (Gemini 2.5 Flash, Gemini 2.5 Pro)
+- **Anthropic** (Claude Opus 4, Claude Sonnet 4)
+- **Ollama** (Llama 3.2, Mistral, CodeLlama - **Local, no API costs!**)
+- **HuggingFace** (Llama, Mistral, Phi-3)
+- **xAI** (Grok-4)
+- **Together.AI** (Kimi K2, DeepSeek-R1, Qwen 3)
+
+For detailed setup instructions for local models, see **[docs/LOCAL_MODELS_SETUP.md](docs/LOCAL_MODELS_SETUP.md)**.
 
 **Configuration:**
 ```yaml

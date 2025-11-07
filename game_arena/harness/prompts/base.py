@@ -350,6 +350,27 @@ class BasePromptBuilder(ABC):
 
             # DeepSeek models
             (r'^deepseek-.*', 'deepseek'),
+
+            # Ollama local variants (map concrete names to generic families if present)
+            (r'^llama3(\.2)?(:.*)?$', 'llama'),
+            (r'^llama3\.2(:.*)?$', 'llama'),
+            (r'^mistral(:.*)?$', 'ollama'),
+            (r'^codellama(:.*)?$', 'ollama'),
+            (r'^qwen[0-9]?.*', 'ollama'),
+
+            # HuggingFace common families
+            (r'^meta-llama/.*', 'llama'),
+            (r'^mistralai/.*', 'huggingface'),
+            (r'^microsoft/Phi-3.*', 'huggingface'),
+
+            # Together / Kimi / Qwen / DeepSeek families (map to existing keys)
+            (r'^moonshotai/Kimi-.*', 'kimi'),
+            (r'^Qwen/.*', 'deepseek'),
+            (r'^deepseek-ai/.*', 'deepseek'),
+
+            # xAI grok variants
+            (r'^grok-4.*', 'grok'),
+            (r'^grok-3-.*', 'grok'),
         ]
 
         for pattern, normalized in normalization_patterns:
@@ -357,6 +378,22 @@ class BasePromptBuilder(ABC):
                 # Check if normalized name exists in config
                 if normalized in self.model_configs['models']:
                     return normalized
+
+        # Secondary fallback: substring heuristics (more permissive)
+        # This is intentionally simple and only maps to categories that exist in config.
+        lname = model_name.lower()
+        if 'llama' in lname and 'llama' in self.model_configs['models']:
+            return 'llama'
+        if 'mistral' in lname and 'ollama' in self.model_configs['models']:
+            return 'ollama'
+        if 'grok' in lname and 'grok' in self.model_configs['models']:
+            return 'grok'
+        if 'kimi' in lname and 'kimi' in self.model_configs['models']:
+            return 'kimi'
+        if 'deepseek' in lname and 'deepseek' in self.model_configs['models']:
+            return 'deepseek'
+        if 'gemini' in lname and 'gemini' in self.model_configs['models']:
+            return 'gemini'
 
         # Fallback: return original name (will fail validation with clear error)
         return model_name

@@ -53,6 +53,12 @@ from game_arena.harness.model_generation_sdk import (
     OpenAIChatCompletionsModel,
     AnthropicModel
 )
+from game_arena.harness.model_generation_http import (
+    OllamaModel,
+    HuggingFaceModel,
+    XAIModel,
+    TogetherAIModel
+)
 
 colored = termcolor.colored
 
@@ -60,13 +66,15 @@ colored = termcolor.colored
 _MAX_TURNS = flags.DEFINE_integer(
     "turns", 50, "Maximum number of turns to play"
 )
-_PLAYER1_MODEL = flags.DEFINE_enum(
-    "player1", "gemini", ["gemini", "openai", "anthropic"],
-    "Model for Player 1"
+_PLAYER1_MODEL = flags.DEFINE_string(
+    "player1",
+    "gemini",
+    "Model provider for Player 1. Supports 'provider' or 'provider:model' (e.g., 'ollama:mistral' or 'ollama:llama3.2:3b').",
 )
-_PLAYER2_MODEL = flags.DEFINE_enum(
-    "player2", "openai", ["gemini", "openai", "anthropic"],
-    "Model for Player 2"
+_PLAYER2_MODEL = flags.DEFINE_string(
+    "player2",
+    "openai",
+    "Model provider for Player 2. Supports 'provider' or 'provider:model' (e.g., 'ollama:llama3.2').",
 )
 _FREECIV_HOST = flags.DEFINE_string(
     "host", "fciv-net", "FreeCiv3D server host"
@@ -129,25 +137,76 @@ def check_freeciv_server(host: str, port: int) -> bool:
         return False
 
 
-def create_model(model_type: str, api_keys: dict):
-    """Create LLM model based on type."""
-    if model_type == "gemini":
-        return AIStudioModel(
-            model_name=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            api_key=api_keys.get("gemini")
-        )
-    elif model_type == "openai":
-        return OpenAIChatCompletionsModel(
-            model_name=os.getenv("OPENAI_MODEL", "gpt-4.1"),
-            api_key=api_keys.get("openai")
-        )
-    elif model_type == "anthropic":
-        return AnthropicModel(
-            model_name=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5@20251001"),
-            api_key=api_keys.get("anthropic")
-        )
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}")
+def _parse_model_spec(spec: str) -> tuple[str, Optional[str]]:
+    """Parse provider[:model] syntax.
+
+    Examples:
+      'ollama:mistral' -> ('ollama', 'mistral')
+      'ollama:llama3.2:3b' -> ('ollama', 'llama3.2:3b')
+      'huggingface:meta-llama/Llama-3.2-3B-Instruct' -> ('huggingface', 'meta-llama/Llama-3.2-3B-Instruct')
+      'xai:grok-4' -> ('xai', 'grok-4')
+      'gemini' -> ('gemini', None)
+    """
+    parts = spec.split(':')
+    if not parts:
+        raise ValueError("Empty model spec")
+    provider = parts[0].lower()
+    if len(parts) == 1:
+        return provider, None
+    # Recombine remaining parts as model (since llama3.2:3b contains colon)
+    model_override = ':'.join(parts[1:])
+    return provider, model_override
+
+
+def create_model(model_spec: str, api_keys: dict):
+    """Create LLM model based on provider:model spec.
+
+    Args:
+      model_spec: Either provider or provider:model form.
+      api_keys: Mapping of provider -> key.
+    """
+    provider, override = _parse_model_spec(model_spec)
+
+    if provider == "gemini":
+        model_name = override or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        return AIStudioModel(model_name=model_name, api_key=api_keys.get("gemini"))
+
+    if provider == "openai":
+        model_name = override or os.getenv("OPENAI_MODEL", "gpt-4.1")
+        return OpenAIChatCompletionsModel(model_name=model_name, api_key=api_keys.get("openai"))
+
+    if provider == "anthropic":
+        model_name = override or os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5@20251001")
+        return AnthropicModel(model_name=model_name, api_key=api_keys.get("anthropic"))
+
+    if provider == "ollama":
+        # Ollama local inference. Apply default tag:
+        # If override has no ':' after first segment, append ':latest'
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        if override:
+            # If override contains no second colon part (e.g. 'mistral' or 'llama3.2') add :latest
+            # We consider a tag present if there's at least one ':' after the provider split.
+            if ':' not in override or override.endswith(':'):
+                model_name = override.rstrip(':') + ':latest'
+            else:
+                model_name = override
+        else:
+            model_name = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+        return OllamaModel(model_name=model_name, base_url=base_url)
+
+    if provider == "huggingface":
+        model_name = override or os.getenv("HF_MODEL", "meta-llama/Llama-3.2-3B-Instruct")
+        return HuggingFaceModel(model_name=model_name, api_key=api_keys.get("huggingface"))
+
+    if provider == "xai":
+        model_name = override or os.getenv("XAI_MODEL", "grok-4")
+        return XAIModel(model_name=model_name, api_key=api_keys.get("xai"), api_options={"stream": True})
+
+    if provider == "together":
+        model_name = override or os.getenv("TOGETHER_MODEL", "moonshotai/Kimi-K2-Instruct")
+        return TogetherAIModel(model_name=model_name, api_key=api_keys.get("together"))
+
+    raise ValueError(f"Unsupported provider in spec: {provider}")
 
 
 async def execute_player_turn(
@@ -654,18 +713,23 @@ async def run_freeciv_game():
     api_keys = {
         "gemini": os.getenv("GEMINI_API_KEY"),
         "openai": os.getenv("OPENAI_API_KEY"),
-        "anthropic": os.getenv("ANTHROPIC_API_KEY")
+        "anthropic": os.getenv("ANTHROPIC_API_KEY"),
+        "xai": os.getenv("XAI_API_KEY"),
+        "together": os.getenv("TOGETHER_API_KEY"),
+        "huggingface": os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN"),
     }
 
     # Get LLM Gateway API token
     llm_api_token = os.getenv("LLM_API_TOKEN", _API_TOKEN.value)
 
-    # Validate required API keys
-    required_keys = [_PLAYER1_MODEL.value, _PLAYER2_MODEL.value]
-    for model_type in required_keys:
-        if not api_keys.get(model_type):
-            print(colored(f"✗ Missing API key for {model_type.upper()}", "red"))
-            print(f"Please set {model_type.upper()}_API_KEY in your .env file")
+    # Validate required API keys (skip for local providers like Ollama)
+    required_specs = [_PLAYER1_MODEL.value, _PLAYER2_MODEL.value]
+    local_providers = {"ollama"}  # Providers that don't require API keys
+    for spec in required_specs:
+        provider, _ = _parse_model_spec(spec)
+        if provider not in local_providers and not api_keys.get(provider):
+            print(colored(f"✗ Missing API key for {provider.upper()}", "red"))
+            print(f"Please set {provider.upper()}_API_KEY in your .env file")
             return False
 
     # Check FreeCiv3D server (skipping HTTP check, testing WebSocket directly)
