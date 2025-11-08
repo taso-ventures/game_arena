@@ -23,7 +23,7 @@ import os
 import sys
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 import webbrowser
 import requests
@@ -249,6 +249,9 @@ async def execute_player_turn(
     last_state_refresh_time = 0  # Track when we last refreshed state
     # Track executed unit_build_city actions to prevent duplicates (gateway bug workaround)
     executed_build_city_units = set()  # Set of unit IDs that have built cities this turn
+    # Initialize variables referenced in finally/return sections for static analyzers
+    action = None  # Last attempted action
+    result: Dict[str, Any] = {}  # Last action result
 
     try:
         if verbose:
@@ -481,7 +484,7 @@ async def execute_player_turn(
 
                 # After retry loop - handle state refresh
                 if action_succeeded and result.get('success'):
-                    action_type = action.action_type if hasattr(action, 'action_type') else None
+                    action_type = action.action_type if (action and hasattr(action, 'action_type')) else None
 
                     # List of actions that immediately change game state
                     state_changing_actions = [
@@ -529,7 +532,7 @@ async def execute_player_turn(
                 await asyncio.sleep(3.0)
 
                 # Record action
-                action_type = action.action_type if hasattr(action, 'action_type') else 'unknown'
+                action_type = action.action_type if (action and hasattr(action, 'action_type')) else 'unknown'
                 actions_taken.append({
                     'action': action,
                     'action_type': action_type,
@@ -883,9 +886,15 @@ async def run_freeciv_game():
             units1 = state1.get("units", [])
             cities1 = state1.get("cities", [])
 
-            logger.debug(f"Player 1 state: {len(players1)} players, {len(units1)} units, {len(cities1)} cities")
+            # Normalize players to a list for safe slicing/iteration (API may return dict)
+            if isinstance(players1, dict):
+                players_list = list(players1.values())
+            else:
+                players_list = list(players1)
+
+            logger.debug(f"Player 1 state: {len(players_list)} players, {len(units1)} units, {len(cities1)} cities")
             logger.debug(f"Turn: {state1.get('turn', 'unknown')}, Phase: {state1.get('game', {}).get('phase', 'unknown')}")
-            print(colored(f"Player 1 state: {len(players1)} players, {len(units1)} units, {len(cities1)} cities", "blue"))
+            print(colored(f"Player 1 state: {len(players_list)} players, {len(units1)} units, {len(cities1)} cities", "blue"))
             print(colored(f"Turn: {state1.get('turn', 'unknown')}, Phase: {state1.get('game', {}).get('phase', 'unknown')}", "blue"))
 
             # DIAGNOSTIC: Check legal_actions availability
@@ -907,8 +916,8 @@ async def run_freeciv_game():
                 print(colored("⚠️ No legal_actions in state at initialization!", "yellow"))
 
             # Verify nation assignment
-            if players1:
-                for i, player in enumerate(players1[:2]):  # Check first 2 players
+            if players_list:
+                for i, player in enumerate(players_list[:2]):  # Check first 2 players
                     player_nation = player.get("nation", "unassigned")
                     player_name = player.get("name", f"Player {i+1}")
                     logger.debug(f"{player_name}: nation={player_nation}")
@@ -1154,19 +1163,22 @@ async def run_freeciv_game():
 
                 # Log turn summary
                 if not isinstance(player1_result, Exception) and not isinstance(player2_result, Exception):
-                    logger.info(f"Turn {game_turn} completed: P1={player1_result['action_count']} actions, "
-                               f"P2={player2_result['action_count']} actions, duration={turn_duration:.1f}s")
+                    p1r = cast(Dict[str, Any], player1_result)
+                    p2r = cast(Dict[str, Any], player2_result)
+
+                    logger.info(f"Turn {game_turn} completed: P1={p1r['action_count']} actions, "
+                               f"P2={p2r['action_count']} actions, duration={turn_duration:.1f}s")
                     print(colored(f"\n📊 Turn {game_turn} Summary:", "cyan"))
-                    print(f"  Player 1: {player1_result['action_count']} actions, "
-                          f"ended_turn: {player1_result['ended_turn']}, "
-                          f"messages: {player1_result.get('message_count', 'N/A')}")
-                    print(f"  Player 2: {player2_result['action_count']} actions, "
-                          f"ended_turn: {player2_result['ended_turn']}, "
-                          f"messages: {player2_result.get('message_count', 'N/A')}")
+                    print(f"  Player 1: {p1r['action_count']} actions, "
+                          f"ended_turn: {p1r['ended_turn']}, "
+                          f"messages: {p1r.get('message_count', 'N/A')}")
+                    print(f"  Player 2: {p2r['action_count']} actions, "
+                          f"ended_turn: {p2r['ended_turn']}, "
+                          f"messages: {p2r.get('message_count', 'N/A')}")
                     print(f"  Duration: {turn_duration:.1f}s")
 
                     # Calculate total messages for the turn
-                    total_messages = player1_result.get('message_count', 0) + player2_result.get('message_count', 0)
+                    total_messages = p1r.get('message_count', 0) + p2r.get('message_count', 0)
                     if total_messages > 0:
                         # FreeCiv3D configuration: MAX_MESSAGES_PER_TURN=24 (recommended for 2-player games)
                         # Gateway burst limit is 40 msg/s, but staying under 24 is safer
@@ -1184,10 +1196,10 @@ async def run_freeciv_game():
                             ))
 
                     # Check if both players ended their turn
-                    if not player1_result['ended_turn']:
+                    if not p1r['ended_turn']:
                         logger.warning(f"Turn {game_turn}: Player 1 did not call end_turn")
                         print(colored("  ⚠️ Player 1 did not call end_turn", "yellow"))
-                    if not player2_result['ended_turn']:
+                    if not p2r['ended_turn']:
                         logger.warning(f"Turn {game_turn}: Player 2 did not call end_turn")
                         print(colored("  ⚠️ Player 2 did not call end_turn", "yellow"))
 
