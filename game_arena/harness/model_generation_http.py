@@ -776,6 +776,163 @@ async def _post_requests_async_return_first_success(
         return successful_result, error_infos
 
 
+class MoonshotModel(model_generation.MultimodalModel):
+    """Wrapper for Moonshot AI API access.
+    
+    Moonshot AI provides the Kimi series of models with extended context support.
+    The API is OpenAI-compatible and uses https://api.moonshot.cn/v1 as the base URL.
+    
+    Example usage:
+        model = MoonshotModel(model_name="kimi-k2-thinking", api_key="sk-xxx")
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        model_options: Mapping[str, Any] | None = None,
+        api_options: Mapping[str, Any] | None = None,
+        api_key: str | None = None,
+    ):
+        super().__init__(
+            model_name, model_options=model_options, api_options=api_options
+        )
+        # If API key is None, defaults to MOONSHOT_API_KEY in environment.
+        if api_key is None:
+            try:
+                api_key = os.environ["MOONSHOT_API_KEY"]
+            except KeyError as e:
+                logging.error(
+                    "MOONSHOT_API_KEY environment variable not set. Please set it to"
+                    " use %s.",
+                    self._model_name,
+                )
+                raise e
+        self._headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        self._api_url = "https://api.moonshot.cn/v1/chat/completions"
+
+    def _generate(
+        self,
+        content: Sequence[Mapping[str, Any]],
+        system_instruction: str | None = None,
+    ) -> tournament_util.GenerateReturn:
+        """Generate using Moonshot API."""
+        messages = []
+        if system_instruction is not None:
+            messages.append({"role": "system", "content": system_instruction})
+        messages.append(
+            {
+                "role": "user",
+                "content": content,
+            }
+        )
+
+        if self._model_options is None:
+            self._model_options = {}
+        if self._api_options is None:
+            self._api_options = {}
+
+        # Determine max_tokens based on model
+        if "max_tokens" in self._model_options:
+            max_tokens = self._model_options["max_tokens"]
+        else:
+            # Moonshot models typically support large context windows
+            # kimi-k2-thinking supports up to 128k context
+            max_tokens = 8192  # Conservative default for output
+
+        request = {
+            "model": self._model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+
+        # Add optional parameters
+        for option in ["temperature", "top_p"]:
+            if option in self._model_options:
+                request[option] = self._model_options[option]
+
+        try:
+            timeout = self._api_options.get("timeout", 600)  # 10 minutes default
+            response = requests.post(
+                self._api_url,
+                json=request,
+                headers=self._headers,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            completion = response.json()
+
+            # Extract content from OpenAI-compatible response format
+            response_content = completion["choices"][0]["message"]["content"]
+            if response_content is None:
+                logging.warning(
+                    "Moonshot AI completion returned None content. Returning empty"
+                    " string. Request: %s",
+                    _sanitize_request_for_logging(request),
+                )
+                response_content = ""
+
+            main_response = response_content
+            main_response_and_thoughts = ""
+
+            # Check if this is a thinking model that might have reasoning content
+            # Moonshot's thinking models may include reasoning in special tags
+            if "thinking" in self._model_name.lower():
+                # For now, just use the full content
+                main_response_and_thoughts = response_content
+
+            # Extract token counts
+            generation_tokens = None
+            prompt_tokens = None
+            if "usage" in completion:
+                usage = completion["usage"]
+                generation_tokens = usage.get("completion_tokens")
+                prompt_tokens = usage.get("prompt_tokens")
+
+            return tournament_util.GenerateReturn(
+                main_response=main_response,
+                main_response_and_thoughts=main_response_and_thoughts,
+                request_for_logging=_sanitize_request_for_logging(request),
+                response_for_logging=completion,
+                generation_tokens=generation_tokens,
+                prompt_tokens=prompt_tokens,
+            )
+
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None:
+                logging.error(
+                    "Moonshot AI HTTP error: status=%d, reason=%s, text=%s",
+                    e.response.status_code,
+                    e.response.reason,
+                    e.response.text,
+                )
+                if e.response.status_code == 400:
+                    raise model_generation.DoNotRetryError(
+                        str(e),
+                        info={"request": request, "response": e.response},
+                    ) from e
+            raise
+        except requests.exceptions.RequestException as e:
+            logging.exception("Request to Moonshot AI failed: %s", e)
+            raise
+
+    def generate_with_text_input(
+        self, model_input: tournament_util.ModelTextInput
+    ) -> tournament_util.GenerateReturn:
+        content = [{"type": "text", "text": model_input.prompt_text}]
+        return self._generate(content, model_input.system_instruction)
+
+    def generate_with_image_text_input(
+        self, model_input: tournament_util.ModelImageTextInput
+    ) -> tournament_util.GenerateReturn:
+        # Moonshot Kimi models support vision capabilities
+        content = _create_image_text_content(model_input)
+        return self._generate(content, model_input.system_instruction)
+
+
 class OllamaModel(model_generation.MultimodalModel):
     """Wrapper for local Ollama API access.
     
