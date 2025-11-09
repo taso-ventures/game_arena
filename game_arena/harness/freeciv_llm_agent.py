@@ -1045,6 +1045,34 @@ class FreeCivLLMAgent(
         'end_turn_available': end_turn_available,
       }
 
+    # Secondary heuristic: if only low-impact actions remain (mostly moves) and we've
+    # already taken many actions this turn, proactively end turn to avoid stalls.
+    try:
+      if (
+          action_context.get('should_consider_end_turn', False)
+          and action_context.get('actions_taken', 0) >= 8
+      ):
+        absl_logging.info(
+            "⏭️ Heuristic (post-legal): ending turn after %d actions (low-impact only)",
+            action_context.get('actions_taken', 0)
+        )
+        end_turn_action = FreeCivAction(
+            action_type="end_turn",
+            actor_id=player_id,
+            target=None,
+            parameters={"turn": state.turn},
+            source="player",
+            confidence=1.0,
+            parse_method="heuristic",
+            strategic_score=1.0,
+        )
+        self.on_action_taken(end_turn_action)
+        self._record_action_in_memory(end_turn_action, observation, state)
+        return end_turn_action
+    except Exception:
+      # Non-fatal; proceed with normal generation if context missing
+      pass
+
     # Generate action with enriched context (LLM-based decision)
     selected_action = await self._generate_action_with_llm(
       observation, state, legal_actions, action_context=action_context
