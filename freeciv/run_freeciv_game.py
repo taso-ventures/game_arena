@@ -57,7 +57,8 @@ from game_arena.harness.model_generation_http import (
     OllamaModel,
     HuggingFaceModel,
     XAIModel,
-    TogetherAIModel
+    TogetherAIModel,
+    MoonshotModel
 )
 
 colored = termcolor.colored
@@ -205,6 +206,10 @@ def create_model(model_spec: str, api_keys: dict):
     if provider == "together":
         model_name = override or os.getenv("TOGETHER_MODEL", "moonshotai/Kimi-K2-Instruct")
         return TogetherAIModel(model_name=model_name, api_key=api_keys.get("together"))
+
+    if provider == "moonshot":
+        model_name = override or os.getenv("MOONSHOT_MODEL", "kimi-k2-thinking")
+        return MoonshotModel(model_name=model_name, api_key=api_keys.get("moonshot"))
 
     raise ValueError(f"Unsupported provider in spec: {provider}")
 
@@ -740,6 +745,7 @@ async def run_freeciv_game():
         "xai": os.getenv("XAI_API_KEY"),
         "together": os.getenv("TOGETHER_API_KEY"),
         "huggingface": os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN"),
+        "moonshot": os.getenv("MOONSHOT_API_KEY"),
     }
 
     # Get LLM Gateway API token
