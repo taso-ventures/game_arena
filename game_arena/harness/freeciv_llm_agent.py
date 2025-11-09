@@ -27,7 +27,7 @@ import logging
 import random
 import time
 import math
-from typing import Any, Dict, List, Mapping, Optional, TypedDict
+from typing import Any, Dict, List, Mapping, Optional, TypedDict, cast
 
 from absl import logging as absl_logging
 
@@ -40,7 +40,7 @@ from game_arena.harness.freeciv_proxy_client import FreeCivProxyClient
 from game_arena.harness.freeciv_state import FreeCivAction, FreeCivState
 from game_arena.harness.freeciv_state_sync import FreeCivStateSynchronizer
 from game_arena.harness.freeciv_strategy import StrategyManager
-from game_arena.harness.prompts.freeciv_prompts import FreeCivPromptBuilder
+from game_arena.harness.prompts.freeciv_prompts import FreeCivPromptBuilder, ObservationData
 
 logger = logging.getLogger(__name__)
 
@@ -126,20 +126,8 @@ class FreeCivLLMAgent(
     self.memory = GameMemory(max_size=memory_size)
     self.strategy_manager = StrategyManager()
 
-    # Initialize rethinking sampler if enabled
-    if use_rethinking:
-      self.sampler = rethink.RethinkSampler(
-          model=model,
-          strategy=tournament_util.SamplerChoice.RETHINK_WITH_ENV,
-          num_max_rethinks=max_rethinks,
-          move_parser=self.action_parser,
-          legality_parser=self.action_parser,
-          game_short_name="freeciv",
-          prompt_generator=FreeCivPromptGeneratorAdapter(),
-          rethink_template=None,
-      )
-    else:
-      self.sampler = None
+    # Disable rethinking by default for FreeCiv until sampler implements required Protocol methods.
+    self.sampler = None
 
     # Initialize random number generator
     self._rng = random.Random(seed)
@@ -164,16 +152,25 @@ class FreeCivLLMAgent(
     self.queries_without_action = 0
     self.last_turn_units_exhausted = False
     self._consecutive_move_fallbacks = 0
+    # Cache for player id (set after first successful extraction)
+    self._cached_player_id: Optional[int] = None
+
+    # Store last LLM response text & last selected action string for richer Kaggle extras
+    self._last_response_text: Optional[str] = None
+    self._last_selected_action_string: Optional[str] = None
 
     absl_logging.info(
         "FreeCivLLMAgent initialized: model=%s, strategy=%s, rethinking=%s",
-        model.model_name,
-        strategy,
+        self.model.model_name,
+        self.strategy,
         use_rethinking,
     )
 
   def __call__(
-      self, observation: Mapping[str, Any], info: Mapping[str, Any]
+      self,
+      observation: Mapping[str, Any],
+      configuration: Mapping[str, Any],
+      **kwargs: Any,
   ) -> agent.KaggleSpielActionWithExtras:
     """Execute agent action selection following KaggleSpielAgent protocol.
 
@@ -192,10 +189,20 @@ class FreeCivLLMAgent(
       Exception: If action generation fails and fallback is disabled
     """
     start_time = time.time()
+    del configuration, kwargs  # Unused in FreeCiv agent
 
     try:
       # Run async action generation
       action_int = asyncio.run(self._get_action_async(observation))
+
+      # Build KaggleSpielActionWithExtras response (conforms to protocol expectations)
+      action_string = self._last_selected_action_string
+      thoughts = self._last_response_text
+      status = (
+          f"ok model_calls={self._num_model_calls} "
+          f"prompt_tokens≈{self._last_prompt_tokens} "
+          f"response_tokens≈{self._last_response_tokens}"
+      )
 
       # Track performance
       execution_time = time.time() - start_time
@@ -208,7 +215,13 @@ class FreeCivLLMAgent(
           self._num_model_calls,
       )
 
-      return {"submission": action_int}
+      return agent.KaggleSpielActionWithExtras(
+          submission=action_int,
+          actionString=action_string,
+          thoughts=thoughts,
+          status=status,
+          generate_returns=[thoughts] if thoughts else [],
+      )
 
     except Exception as e:
       execution_time = time.time() - start_time
@@ -260,7 +273,14 @@ class FreeCivLLMAgent(
           # Add to error history for trend analysis
           self._error_history.append(self._error_telemetry.copy())
 
-          return {"submission": fallback_action}
+          # Return KaggleSpielActionWithExtras for protocol compliance
+          return agent.KaggleSpielActionWithExtras(
+              submission=fallback_action,
+              actionString=None,
+              thoughts=None,
+              status="fallback:random_from_legal_actions",
+              generate_returns=[],
+          )
         else:
           # No legal actions available - record and re-raise
           self._error_telemetry["fallback_action"] = {
@@ -395,6 +415,8 @@ class FreeCivLLMAgent(
               f"Player ID must be non-negative, got {player_id} for key '{key}'"
           )
 
+        # Cache for future fallback use
+        self._cached_player_id = player_id
         return player_id
 
     # Try to extract from state information
@@ -416,10 +438,11 @@ class FreeCivLLMAgent(
                   f"Player ID in state.{key} must be non-negative, got {player_id}"
               )
 
+            self._cached_player_id = player_id
             return player_id
 
     # Check if stored from previous calls
-    if hasattr(self, '_cached_player_id'):
+    if hasattr(self, '_cached_player_id') and self._cached_player_id is not None:
       absl_logging.warning(
           "Using cached player ID %d (could not extract from observation)",
           self._cached_player_id
@@ -494,6 +517,17 @@ class FreeCivLLMAgent(
 
     # Parse response
     selected_action = self._parse_llm_response(response.main_response, legal_actions)
+
+    # Persist response text & action string for __call__ extras
+    try:
+      from game_arena.harness.freeciv_action_converter import FreeCivActionConverter
+      self._last_response_text = response.main_response
+      converter = FreeCivActionConverter()
+      self._last_selected_action_string = converter.action_to_string(selected_action)
+    except Exception:  # pylint: disable=broad-except
+      # Non-fatal; keep going even if conversion fails
+      self._last_response_text = response.main_response
+      self._last_selected_action_string = None
 
     if selected_action not in legal_actions:
       absl_logging.warning(
@@ -661,11 +695,11 @@ class FreeCivLLMAgent(
     return enhanced_text
 
   def _build_context_aware_prompt(
-      self,
-      observation: Mapping[str, Any],
-      state: FreeCivState,
-      legal_actions: List[FreeCivAction],
-      action_context: Optional[Dict[str, Any]] = None
+    self,
+    observation: Mapping[str, Any],
+    state: FreeCivState,
+    legal_actions: List[FreeCivAction],
+    action_context: Optional[Dict[str, Any]] = None,
   ) -> tournament_util.ModelTextInput:
     """Build context-aware prompt for LLM.
 
@@ -681,13 +715,11 @@ class FreeCivLLMAgent(
     """
     # Get memory context
     memory_context = self.memory.get_context(max_tokens=1000)
-
     # Get strategy configuration
     strategy_config = self.strategy_manager.get_strategy_config(self.strategy)
-
     # Build enhanced prompt with action context
     prompt_text = self.prompt_builder.build_enhanced_prompt(
-        observation=observation,
+        observation=cast(ObservationData, observation),
         legal_actions=legal_actions,
         model_name=self.model.model_name,
         strategy_context=strategy_config,
