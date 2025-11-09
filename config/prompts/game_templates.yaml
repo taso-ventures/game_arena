@@ -154,6 +154,8 @@ response_formats:
     EXAMPLE:
     FINAL DECISION: tech_research_player(1)_target(Writing) because it unlocks Libraries for science boost and supports our cultural dominance strategy.
 
+    Dynamic note: End-turn guidance will appear in AVAILABLE ACTIONS only when appropriate.
+
   conversational: |
     Share your strategic thinking in a natural, engaging way. Explain your
     reasoning as if discussing strategy with a fellow player.
@@ -167,6 +169,8 @@ response_formats:
     EXAMPLE:
     "I'm going with tech_research_player(1)_target(Pottery) because it opens up granaries for population growth!"
 
+    Dynamic note: End-turn guidance appears only when it's strategically time to end the turn.
+
   concise: |
     Present key analysis points efficiently. Focus on critical factors and
     decisive reasoning.
@@ -176,3 +180,4 @@ response_formats:
 
     EXAMPLE:
     Analysis: Need military. Choice: city_production_city(5)_target(Warrior) - strengthens defense.
+    Dynamic note: End-turn suggestion shown only when no meaningful actions remain.
