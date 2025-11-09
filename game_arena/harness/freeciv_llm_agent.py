@@ -837,16 +837,35 @@ class FreeCivLLMAgent(
         self.strategy, strategy_priorities["balanced"]
     )
 
-    # Find first action matching priority order
+    # Prefer NOT to choose end_turn if any higher-impact actions are available
+    # Collect candidates by priority list excluding end_turn initially
+    end_turn_actions = [a for a in legal_actions if a.action_type == 'end_turn']
+    # Identify high-impact actions
+    high_impact_types = {'unit_attack', 'city_production', 'tech_research'}
+    non_move_actions = [a for a in legal_actions if 'move' not in a.action_type]
     for action_type in priority_list:
       for action in legal_actions:
-        if action.action_type == action_type:
+        if action.action_type == action_type and action.action_type != 'end_turn':
           absl_logging.debug(
-              "Strategy fallback: found %s action (priority %d)",
+              "Strategy fallback: picked %s action (priority %d)",
               action_type,
               priority_list.index(action_type) + 1
           )
+          # Track consecutive move fallbacks to avoid repetition
+          if action.action_type == 'unit_move':
+            self._consecutive_move_fallbacks += 1
+            # If we've picked move fallback multiple times and other non-move options exist, switch
+            if self._consecutive_move_fallbacks >= 2 and non_move_actions:
+              absl_logging.info("Fallback penalty: avoiding repeated unit_move; selecting non-move alternative")
+              return non_move_actions[0]
+          else:
+            self._consecutive_move_fallbacks = 0
           return action
+
+    # If only end_turn or no prioritized non-end_turn actions remain, fall back to end_turn if present
+    if end_turn_actions:
+      absl_logging.debug("Strategy fallback: only end_turn available, selecting end_turn")
+      return end_turn_actions[0]
 
     # Ultimate fallback: return first legal action
     absl_logging.warning(
@@ -1003,9 +1022,43 @@ class FreeCivLLMAgent(
         )
         raise ValueError(f"No legal actions for player {player_id}")
 
-    # Generate action with context (LLM-based decision)
+    # If caller did not provide action_context, build a real one from agent state and legal actions
+    if action_context is None:
+      max_actions = 20  # TODO: externalize if server exposes limit
+      actions_taken = len(self.actions_this_turn)
+      actions_remaining = max_actions - actions_taken
+
+      action_types = [a.action_type.lower() for a in legal_actions]
+      end_turn_available = any(t == 'end_turn' for t in action_types)
+      high_impact_present = any(
+        any(keyword in t for keyword in ['attack', 'build', 'production', 'research'])
+        for t in action_types
+      )
+      low_actions_only = all(('move' in t or t == 'end_turn') for t in action_types) if action_types else False
+      only_end_turn = len(action_types) == 1 and action_types[0] == 'end_turn'
+
+      # Unit exhaustion heuristic
+      my_units = [u for u in state.units.values() if u.owner == player_id]
+      all_units_exhausted = False
+      if my_units and all(hasattr(u, 'moves_left') and u.moves_left == 0 for u in my_units):
+        all_units_exhausted = True
+
+      should_consider_end_turn = end_turn_available and (
+        only_end_turn or all_units_exhausted or low_actions_only or (not high_impact_present and actions_taken >= 1)
+      )
+
+      action_context = {
+        'actions_taken': actions_taken,
+        'actions_remaining': actions_remaining,
+        'max_actions': max_actions,
+        'should_consider_end_turn': should_consider_end_turn,
+        'units_exhausted': all_units_exhausted,
+        'end_turn_available': end_turn_available,
+      }
+
+    # Generate action with enriched context (LLM-based decision)
     selected_action = await self._generate_action_with_llm(
-        observation, state, legal_actions, action_context=action_context
+      observation, state, legal_actions, action_context=action_context
     )
 
     # NEW: Record action in turn history
