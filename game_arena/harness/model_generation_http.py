@@ -812,7 +812,7 @@ class MoonshotModel(model_generation.MultimodalModel):
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        self._api_url = "https://api.moonshot.cn/v1/chat/completions"
+        self._api_url = "https://api.moonshot.ai/v1/chat/completions"
 
     def _generate(
         self,
