@@ -26,6 +26,7 @@ import asyncio
 import logging
 import random
 import time
+import math
 from typing import Any, Dict, List, Mapping, Optional, TypedDict
 
 from absl import logging as absl_logging
@@ -146,6 +147,11 @@ class FreeCivLLMAgent(
     # Performance tracking
     self._num_model_calls = 0
     self._total_response_time = 0.0
+    # Token usage (approximate). Using heuristic: ~4 chars per token for English.
+    self._total_prompt_tokens = 0
+    self._total_response_tokens = 0
+    self._last_prompt_tokens = 0
+    self._last_response_tokens = 0
 
     # Error telemetry (PR feedback fix: capture error context for debugging)
     self._error_telemetry: Optional[Dict[str, Any]] = None
@@ -157,6 +163,7 @@ class FreeCivLLMAgent(
     self.actions_this_turn: List[FreeCivAction] = []
     self.queries_without_action = 0
     self.last_turn_units_exhausted = False
+    self._consecutive_move_fallbacks = 0
 
     absl_logging.info(
         "FreeCivLLMAgent initialized: model=%s, strategy=%s, rethinking=%s",
@@ -437,97 +444,66 @@ class FreeCivLLMAgent(
       legal_actions: List[FreeCivAction],
       action_context: Optional[Dict[str, Any]] = None
   ) -> FreeCivAction:
-    """Generate action using LLM with context and strategy.
+    """Generate action using LLM with context, plus token usage logging."""
+    # Extract player ID early for consistency
+    _ = self._extract_player_id(observation)
 
-    Args:
-      observation: Game observation
-      state: Current FreeCiv game state
-      legal_actions: List of legal FreeCiv actions
-      action_context: Optional context about turn actions. See get_action_async()
-          for structure details. When provided, this context is forwarded to
-          the prompt builder to generate dynamic warnings for agents.
-
-    Returns:
-      Selected FreeCivAction
-    """
-    # Extract player_id at function start to ensure consistency across all operations
-    # This prevents player context loss during rethinking and state operations
-    player_id = self._extract_player_id(observation)
-
-    # Log available legal actions for debugging
     absl_logging.debug(
         "Generating action with %d legal options. Examples: %s",
         len(legal_actions),
         [self.action_converter.action_to_string(a) for a in legal_actions[:3]]
     )
 
-    # Build context-aware prompt with action context
-    # TODO(AGE-196): Integrate FreeCiv3D strategic guidance into action selection
-    # When state._raw_state contains these fields (from llm_optimized format):
-    # 1. immediate_priorities: Prioritize actions matching these suggestions
-    # 2. threats: Increase defensive action scores when threats detected
-    # 3. opportunities: Boost exploration/expansion actions for identified opportunities
-    # See Linear issue: https://linear.app/agentclash/issue/AGE-196
-    # Example:
-    #   if 'immediate_priorities' in state._raw_state:
-    #       priorities = state._raw_state['immediate_priorities']
-    #       # Adjust action scoring based on priorities
-    prompt = self._build_context_aware_prompt(
+    # Build prompt (ModelTextInput wrapper)
+    prompt_input = self._build_context_aware_prompt(
         observation, state, legal_actions, action_context=action_context
     )
+    prompt_text = prompt_input.prompt_text
 
-    # Generate response using model (run in thread pool to avoid blocking event loop)
+    # Token estimation helper (lightweight heuristic)
+    def _approx_tokens(text: str) -> int:
+      if not text:
+        return 0
+      return max(1, math.ceil(len(text) / 4))  # ~4 chars/token heuristic
+
+    self._last_prompt_tokens = _approx_tokens(prompt_text)
+    self._total_prompt_tokens += self._last_prompt_tokens
+
+    # Generate model response
     self._num_model_calls += 1
     response = await asyncio.to_thread(
-        self.model.generate_with_text_input, prompt
+        self.model.generate_with_text_input, prompt_input
     )
 
-    # DIAGNOSTIC: Log LLM response for debugging parser issues
+    self._last_response_tokens = _approx_tokens(getattr(response, "main_response", ""))
+    self._total_response_tokens += self._last_response_tokens
     absl_logging.info(
-        "🤖 LLM response (first 300 chars): %s",
-        response.main_response[:300]
+        "🧮 Token estimate: prompt≈%d, response≈%d (totals: prompt≈%d, response≈%d)",
+        self._last_prompt_tokens,
+        self._last_response_tokens,
+        self._total_prompt_tokens,
+        self._total_response_tokens,
     )
+
+    # Log truncated response for diagnostics
+    absl_logging.info("🤖 LLM response (first 300 chars): %s", response.main_response[:300])
     if len(response.main_response) > 300:
-        absl_logging.debug(
-            "Full LLM response (%d chars): %s",
-            len(response.main_response),
-            response.main_response
-        )
-
-    # Parse response to FreeCivAction
-    selected_action = self._parse_llm_response(
-        response.main_response, legal_actions
-    )
-
-    # Validate action is legal with detailed logging
-    if selected_action not in legal_actions:
-      # Log what went wrong for debugging
-      absl_logging.info(
-          "LLM generated illegal action: %s (type=%s, actor=%s, target=%s)",
-          self.action_converter.action_to_string(selected_action),
-          selected_action.action_type,
-          selected_action.actor_id,
-          selected_action.target
-      )
       absl_logging.debug(
-          "Legal actions available (%d): %s",
-          len(legal_actions),
-          [self.action_converter.action_to_string(a) for a in legal_actions[:5]]
+          "Full LLM response (%d chars)", len(response.main_response)
       )
-      absl_logging.debug("LLM response (first 500 chars): %s", response.main_response[:500])
 
-      # Use rethinking sampler if available
-      # Rethinking not supported for FreeCiv dict-based observations
-      # RethinkSampler is designed for OpenSpiel pyspiel.State objects
-      # TODO(AGE-XXX): Implement proper rethinking by calling LLM with error feedback
+    # Parse response
+    selected_action = self._parse_llm_response(response.main_response, legal_actions)
+
+    if selected_action not in legal_actions:
       absl_logging.warning(
-          f"LLM generated illegal action: {selected_action} "
-          f"(type={selected_action.action_type}, actor={selected_action.actor_id}), "
-          f"falling back to first legal action"
+          "LLM produced illegal action '%s', falling back to first legal action",
+          self.action_converter.action_to_string(selected_action)
       )
-      selected_action = legal_actions[0] if legal_actions else None
-      if selected_action:
-        absl_logging.info(f"Using fallback action: {selected_action}")
+      if legal_actions:
+        selected_action = legal_actions[0]
+      else:
+        raise ValueError("No legal actions available for fallback")
 
     return selected_action
 
@@ -669,15 +645,20 @@ class FreeCivLLMAgent(
     failure_context += "3. Makes strategic sense for the current situation\n"
     failure_context += "4. Uses a different unit/city if previous attempts failed\n"
 
+    # base_prompt may be a ModelTextInput; extract text for manipulation
+    base_prompt_text = base_prompt.prompt_text if hasattr(base_prompt, 'prompt_text') else str(base_prompt)
+
     # Insert failure context before response format section
-    if "RESPONSE FORMAT" in base_prompt:
-      return base_prompt.replace(
+    if "RESPONSE FORMAT" in base_prompt_text:
+      enhanced_text = base_prompt_text.replace(
           "\nRESPONSE FORMAT",
           failure_context + "\n\nRESPONSE FORMAT"
       )
     else:
       # Fallback: append at end
-      return base_prompt + "\n" + failure_context
+      enhanced_text = base_prompt_text + "\n" + failure_context
+
+    return enhanced_text
 
   def _build_context_aware_prompt(
       self,
@@ -713,8 +694,16 @@ class FreeCivLLMAgent(
         memory_context=memory_context,
         action_context=action_context,
     )
-
     return tournament_util.ModelTextInput(prompt_text=prompt_text)
+
+  def get_token_usage(self) -> Dict[str, int]:
+    """Return approximate token usage statistics."""
+    return {
+        'prompt_last': self._last_prompt_tokens,
+        'response_last': self._last_response_tokens,
+        'prompt_total': self._total_prompt_tokens,
+        'response_total': self._total_response_tokens,
+    }
 
   def _parse_llm_response(
       self, response_text: str, legal_actions: List[FreeCivAction]
@@ -1086,6 +1075,10 @@ class FreeCivLLMAgent(
         "strategy": self.strategy,
         "memory_size": len(self.memory.history),
         "cache_stats": self.memory.get_cache_statistics(),
+        "prompt_tokens_total": getattr(self, "_total_prompt_tokens", 0),
+        "response_tokens_total": getattr(self, "_total_response_tokens", 0),
+        "prompt_tokens_last": getattr(self, "_last_prompt_tokens", 0),
+        "response_tokens_last": getattr(self, "_last_response_tokens", 0),
     }
 
   def get_error_telemetry(self) -> Optional[Dict[str, Any]]:

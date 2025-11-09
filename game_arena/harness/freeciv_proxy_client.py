@@ -1300,6 +1300,7 @@ class FreeCivProxyClient:
 
           # Log action being sent for diagnostics
           logger.info(f"📤 Sending {action.action_type} action (actor={action.actor_id})")
+          send_t0 = time.time()
           await self.connection_manager.send_message(message_str)
           # Increased timeout to 60s for actions (from default 30s)
           # Actions like unit_build_city may take longer to process server-side
@@ -1307,6 +1308,7 @@ class FreeCivProxyClient:
               ["action_result", "action_accepted", "action_rejected", "error"],  # Added "error"
               timeout=60.0
           )
+          recv_t1 = time.time()
 
           if response:
               # Record success with circuit breaker
@@ -1315,6 +1317,9 @@ class FreeCivProxyClient:
               # Normalize response format for backward compatibility
               msg_type = response.get("type", "")
               if msg_type == "action_accepted":
+                  logger.info(
+                      f"⏱️ Action latency: {int((recv_t1 - send_t0)*1000)} ms from send to acceptance"
+                  )
                   # New format - normalize to old format
                   return {
                       "success": True,
@@ -1367,6 +1372,10 @@ class FreeCivProxyClient:
                       self.circuit_breaker.record_failure()
                       raise RuntimeError(f"Server error [{error_code}]: {error_message}")
               else:
+                  # Record generic latency when old format carries result directly
+                  logger.info(
+                      f"⏱️ Action latency: {int((recv_t1 - send_t0)*1000)} ms (type={msg_type})"
+                  )
                   # Old format or unknown - return as-is
                   return response
 

@@ -253,6 +253,15 @@ async def execute_player_turn(
     action = None  # Last attempted action
     result: Dict[str, Any] = {}  # Last action result
 
+    # Snapshot starting token usage for this agent
+    try:
+        start_tokens = getattr(agent, 'get_token_usage', lambda: {'prompt_total': 0, 'response_total': 0})()
+        start_prompt_total = start_tokens.get('prompt_total', 0)
+        start_response_total = start_tokens.get('response_total', 0)
+    except Exception:
+        start_prompt_total = 0
+        start_response_total = 0
+
     try:
         if verbose:
             print(colored(f"  Player {player_num} ({model_name.upper()}) starting turn...", "blue"))
@@ -693,6 +702,15 @@ async def execute_player_turn(
             import traceback
             traceback.print_exc()
 
+    # Compute per-turn token deltas
+    try:
+        end_tokens = getattr(agent, 'get_token_usage', lambda: {'prompt_total': start_prompt_total, 'response_total': start_response_total})()
+        prompt_tokens_used = max(0, end_tokens.get('prompt_total', start_prompt_total) - start_prompt_total)
+        response_tokens_used = max(0, end_tokens.get('response_total', start_response_total) - start_response_total)
+    except Exception:
+        prompt_tokens_used = 0
+        response_tokens_used = 0
+
     return {
         'player': player_num,
         'actions': actions_taken,
@@ -703,6 +721,8 @@ async def execute_player_turn(
         'action_count': len(actions_taken),
         'message_count': message_count,  # Include message count for diagnostics
         'error': error,
+        'prompt_tokens': prompt_tokens_used,
+        'response_tokens': response_tokens_used,
     }
 
 
@@ -744,6 +764,17 @@ async def run_freeciv_game():
 
         # Create SEPARATE proxy clients for each agent with nation preferences
         print(colored("Creating proxy connections for both players...", "blue"))
+        # Augment leader names with model spec for easier observer identification.
+        # Example: "AI Player 1 (ollama:llama3.2:3b)" or "AI Player 2 (gemini)"
+        p1_provider, p1_model_override = _parse_model_spec(_PLAYER1_MODEL.value)
+        p2_provider, p2_model_override = _parse_model_spec(_PLAYER2_MODEL.value)
+        # Choose display part: if override exists use provider:model, else provider.
+        p1_display_model = f"{p1_provider}:{p1_model_override}" if p1_model_override else p1_provider
+        p2_display_model = f"{p2_provider}:{p2_model_override}" if p2_model_override else p2_provider
+        # FreeCiv leader names sometimes shown in UI lists; keep concise, replace spaces with '_' to avoid parsing issues.
+        augmented_leader1 = f"{_PLAYER1_LEADER.value} ({p1_display_model})".replace('  ', ' ').strip()
+        augmented_leader2 = f"{_PLAYER2_LEADER.value} ({p2_display_model})".replace('  ', ' ').strip()
+
         proxy1 = FreeCivProxyClient(
             host=_FREECIV_HOST.value,
             port=_FREECIV_WS_PORT.value,
@@ -751,7 +782,7 @@ async def run_freeciv_game():
             game_id=game_id,  # Same game_id for both players
             api_token=llm_api_token,
             nation=_PLAYER1_NATION.value if _AUTO_SELECT_NATIONS.value else None,
-            leader_name=_PLAYER1_LEADER.value
+            leader_name=augmented_leader1
         )
 
         proxy2 = FreeCivProxyClient(
@@ -761,7 +792,7 @@ async def run_freeciv_game():
             game_id=game_id,  # Same game_id for both players
             api_token=llm_api_token,
             nation=_PLAYER2_NATION.value if _AUTO_SELECT_NATIONS.value else None,
-            leader_name=_PLAYER2_LEADER.value
+            leader_name=augmented_leader2
         )
 
         # Track timing for diagnostics
@@ -1166,15 +1197,23 @@ async def run_freeciv_game():
                     p1r = cast(Dict[str, Any], player1_result)
                     p2r = cast(Dict[str, Any], player2_result)
 
-                    logger.info(f"Turn {game_turn} completed: P1={p1r['action_count']} actions, "
-                               f"P2={p2r['action_count']} actions, duration={turn_duration:.1f}s")
+                    logger.info(
+                        f"Turn {game_turn} completed: P1={p1r['action_count']} actions, "
+                        f"P2={p2r['action_count']} actions, duration={turn_duration:.1f}s"
+                    )
                     print(colored(f"\n📊 Turn {game_turn} Summary:", "cyan"))
-                    print(f"  Player 1: {p1r['action_count']} actions, "
-                          f"ended_turn: {p1r['ended_turn']}, "
-                          f"messages: {p1r.get('message_count', 'N/A')}")
-                    print(f"  Player 2: {p2r['action_count']} actions, "
-                          f"ended_turn: {p2r['ended_turn']}, "
-                          f"messages: {p2r.get('message_count', 'N/A')}")
+                    print(
+                        f"  Player 1: {p1r['action_count']} actions, "
+                        f"ended_turn: {p1r['ended_turn']}, "
+                        f"messages: {p1r.get('message_count', 'N/A')}, "
+                        f"tokens≈ {p1r.get('prompt_tokens', 0)}/{p1r.get('response_tokens', 0)} (prompt/resp)"
+                    )
+                    print(
+                        f"  Player 2: {p2r['action_count']} actions, "
+                        f"ended_turn: {p2r['ended_turn']}, "
+                        f"messages: {p2r.get('message_count', 'N/A')}, "
+                        f"tokens≈ {p2r.get('prompt_tokens', 0)}/{p2r.get('response_tokens', 0)} (prompt/resp)"
+                    )
                     print(f"  Duration: {turn_duration:.1f}s")
 
                     # Calculate total messages for the turn
