@@ -164,6 +164,9 @@ class FreeCivLLMAgent(
     # in one LLM response; we store the remaining actions here and consume them
     # on subsequent get_action_async() calls to avoid extra LLM requests.
     self._planned_actions: List[FreeCivAction] = []
+    # Instrumentation counters for end_turn planning/execution per turn
+    self._planned_end_turn_count = 0
+    self._executed_end_turn_count = 0
 
     absl_logging.info(
         "FreeCivLLMAgent initialized: model=%s, strategy=%s, rethinking=%s",
@@ -549,9 +552,7 @@ class FreeCivLLMAgent(
     if isinstance(parsed, list):
       if not parsed:
         raise ValueError("Model returned empty action list")
-      legal_planned: List[FreeCivAction] = [
-          a for a in parsed if self._is_action_legal(a, legal_actions)
-      ]
+      legal_planned: List[FreeCivAction] = [a for a in parsed if self._is_action_legal(a, legal_actions)]
       discarded = len(parsed) - len(legal_planned)
       if not legal_planned:
         absl_logging.warning(
@@ -562,6 +563,10 @@ class FreeCivLLMAgent(
       else:
         selected_action = legal_planned[0]
         self._planned_actions = legal_planned[1:]
+        # Count planned end_turn actions for instrumentation
+        self._planned_end_turn_count += sum(
+            1 for a in legal_planned if getattr(a, 'action_type', None) == 'end_turn'
+        )
         absl_logging.info(
             "Parsed %d planned legal actions; executing first and buffering %d (discarded=%d)",
             1 + len(self._planned_actions),
@@ -591,6 +596,10 @@ class FreeCivLLMAgent(
         selected_action = legal_actions[0]
       else:
         raise ValueError("No legal actions available for fallback")
+
+    # Instrument execution if end_turn chosen here
+    if getattr(selected_action, 'action_type', None) == 'end_turn':
+      self._executed_end_turn_count += 1
 
     return selected_action
 
@@ -1477,10 +1486,18 @@ class FreeCivLLMAgent(
           len(self.actions_this_turn),
           self.queries_without_action
       )
+      # Log end_turn instrumentation before reset
+      absl_logging.info(
+          "Turn instrumentation: planned_end_turn=%d executed_end_turn=%d",
+          self._planned_end_turn_count,
+          self._executed_end_turn_count
+      )
       self.current_turn = new_turn
       self.actions_this_turn = []
       self.queries_without_action = 0
       self.last_turn_units_exhausted = False
+      self._planned_end_turn_count = 0
+      self._executed_end_turn_count = 0
 
   def on_action_taken(self, action: FreeCivAction) -> None:
     """Record action in turn history.
