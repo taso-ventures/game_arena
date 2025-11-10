@@ -140,86 +140,80 @@ response_formats:
     ⚡ RECOMMENDED: Submit MULTIPLE actions in one response to maximize efficiency and reduce delays.
     This allows you to plan ahead and execute a sequence of strategic moves in a single turn.
 
-    MULTI-ACTION FORMAT (EITHER FORM IS ACCEPTED):
-    Option A - JSON Array (copy structure, adjust values):
+    MULTI-ACTION JSON FORMAT (copy structure, adjust values):
     [
-      {"type":"unit_build_city","unit_id":102},
-      {"type":"unit_move","unit_id":109,"dest_x":31,"dest_y":52},
-      {"type":"unit_move","unit_id":110,"dest_x":14,"dest_y":30},
-      {"type":"end_turn"}
+      {"type":"unit_build_city","unit_id":102,"reasoning":"Found excellent city site"},
+      {"type":"unit_move","unit_id":109,"dest_x":31,"dest_y":52,"reasoning":"Moving warrior to defensive position"},
+      {"type":"unit_move","unit_id":110,"dest_x":14,"dest_y":30,"reasoning":"Scout exploring unknown territory"},
+      {"type":"end_turn","reasoning":"No more high-value actions remain"}
     ]
 
-    Option B - Canonical List (plain text alternative):
-    unit_build_city(102)
-    unit_move(109)_to(31,52)
-    unit_move(110)_to(14,30)
-    end_turn()
+    SINGLE-ACTION JSON FORMAT (if only one action needed):
+    {"type":"unit_move","unit_id":101,"dest_x":2,"dest_y":3,"reasoning":"Repositioning for next turn"}
 
-    📋 JSON SCHEMA (if using JSON format):
+    📋 JSON SCHEMA:
     {
       "unit_move": {
         "type": "unit_move",
         "unit_id": <integer>,
         "dest_x": <integer>,
-        "dest_y": <integer>
+        "dest_y": <integer>,
+        "reasoning": <string>  // REQUIRED: Brief explanation
       },
       "unit_build_city": {
         "type": "unit_build_city",
-        "unit_id": <integer>
+        "unit_id": <integer>,
+        "reasoning": <string>  // REQUIRED: Brief explanation
       },
       "city_production": {
         "type": "city_production",
         "city_id": <integer>,
-        "production_type": <string>  // REQUIRED: e.g., "warrior", "granary", "settlers"
+        "production_type": <string>,  // REQUIRED: e.g., "warrior", "granary", "settlers"
+        "reasoning": <string>  // REQUIRED: Brief explanation
       },
       "tech_research": {
         "type": "tech_research",
-        "tech_name": <string>  // REQUIRED: e.g., "Pottery", "Writing", "Bronze Working"
+        "tech_name": <string>,  // REQUIRED: e.g., "Pottery", "Writing", "Bronze Working"
+        "reasoning": <string>  // REQUIRED: Brief explanation
       },
       "end_turn": {
-        "type": "end_turn"
+        "type": "end_turn",
+        "reasoning": <string>  // REQUIRED: Brief explanation
       }
     }
 
     ⚠️ CRITICAL JSON RULES:
     1. ONLY use action types that EXACTLY match entries in AVAILABLE ACTIONS
     2. Do NOT invent action types like "explore_nearby_areas" or "build_first_city"
-    3. For city_production: MUST include "production_type" field with what to produce
-    4. For tech_research: MUST include "tech_name" field with technology name
-    5. Copy unit_id, city_id, dest_x, dest_y exactly from AVAILABLE ACTIONS
-    6. If using JSON array, ensure proper format: [{"type":"..."},{"type":"..."}]
+    3. EVERY action MUST include a "reasoning" field explaining your choice
+    4. For city_production: MUST include "production_type" field with what to produce
+    5. For tech_research: MUST include "tech_name" field with technology name
+    6. Copy unit_id, city_id, dest_x, dest_y exactly from AVAILABLE ACTIONS
+    7. If using JSON array, ensure proper format: [{"type":"...","reasoning":"..."},{"type":"...","reasoning":"..."}]
 
     Benefits of multi-action responses:
     - Faster gameplay (reduces round-trip delays)
     - Better strategic planning (coordinate multiple units/cities)
     - More efficient turn execution
-    - You can include "end_turn()" to signal completion
-
-    SINGLE-ACTION FORMAT (fallback if only one action needed):
-    1. Canonical format (PREFERRED): unit_move(101)_to(2,3)
-    2. JSON format: {"type":"unit_move","unit_id":101,"dest_x":2,"dest_y":3}
+    - You can include {"type":"end_turn","reasoning":"..."} to signal completion
 
     ⚠️ IMPORTANT: Every action you provide MUST exactly match an entry in AVAILABLE ACTIONS.
 
-    End with: FINAL DECISION: [your actions in format above] because [strategic reasoning]
+    End with: FINAL DECISION: [your actions in JSON format] because [strategic reasoning]
 
-    EXAMPLE (Multi-Action - Canonical):
-    FINAL DECISION:
-    unit_build_city(103)
-    unit_build_city(104)
-    unit_move(105)_to(53,29)
-    end_turn()
-    because founding two cities rapidly expands our territory while moving the worker to improve tiles, then ending turn to secure our gains.
-
-    EXAMPLE (Multi-Action - JSON):
+    EXAMPLE (Multi-Action JSON):
     FINAL DECISION:
     [
-      {"type":"unit_build_city","unit_id":103},
-      {"type":"unit_build_city","unit_id":104},
-      {"type":"unit_move","unit_id":105,"dest_x":53,"dest_y":29},
-      {"type":"end_turn"}
+      {"type":"unit_build_city","unit_id":103,"reasoning":"Excellent city site with resources"},
+      {"type":"unit_build_city","unit_id":104,"reasoning":"Strategic coastal location"},
+      {"type":"unit_move","unit_id":105,"dest_x":53,"dest_y":29,"reasoning":"Worker moving to improve tiles"},
+      {"type":"end_turn","reasoning":"All productive actions completed"}
     ]
-    because founding two cities rapidly expands our territory while moving the worker to improve tiles, then ending turn to secure our gains.
+
+    EXAMPLE (Single-Action JSON):
+    FINAL DECISION:
+    {"type":"tech_research","tech_name":"Pottery","reasoning":"Need writing for libraries and cultural development"}
+    because advancing in technology opens up new strategic opportunities.
 
     Dynamic note: End-turn guidance will appear in AVAILABLE ACTIONS only when appropriate.
 
@@ -228,17 +222,13 @@ response_formats:
     reasoning as if discussing strategy with a fellow player.
 
     ACTION FORMAT REQUIREMENT:
-    When stating your action choice, use these simple formats:
-    - Canonical (PREFERRED): unit_move(101)_to(2,3) or tech_research(Pottery) or end_turn()
-    - JSON alternative: {"type":"unit_move","unit_id":101,"dest_x":2,"dest_y":3}
+    When stating your action choice, use JSON format with reasoning:
+    {"type":"unit_move","unit_id":101,"dest_x":2,"dest_y":3,"reasoning":"Brief explanation"}
 
     Conclude with your chosen action in the exact format and explain why it's both smart and entertaining.
 
-    EXAMPLE (Canonical - PREFERRED):
-    "I'm going with tech_research(Pottery) because it opens up granaries for population growth!"
-
-    EXAMPLE (JSON alternative):
-    "I'm choosing {"type":"tech_research","tech_name":"Pottery"} to unlock granaries!"
+    EXAMPLE:
+    "I'm choosing {"type":"tech_research","tech_name":"Pottery","reasoning":"Unlocks granaries for faster growth"} to unlock granaries!"
 
     Dynamic note: End-turn guidance appears only when it's strategically time to end the turn.
 
@@ -247,10 +237,9 @@ response_formats:
     decisive reasoning.
 
     ACTION FORMAT: 
-    Use canonical format (PREFERRED): unit_move(101)_to(2,3) or city_production(5)_target(Warrior)
-    Or JSON: {"type":"city_production","city_id":5,"target":"Warrior"}
+    Use JSON with reasoning: {"type":"city_production","city_id":5,"production_type":"Warrior","reasoning":"Need military"}
 
-    EXAMPLE (Canonical - PREFERRED):
-    Analysis: Need military. Choice: city_production(5)_target(Warrior) - strengthens defense.
+    EXAMPLE:
+    Analysis: Need military. Choice: {"type":"city_production","city_id":5,"production_type":"Warrior","reasoning":"Strengthens defense"} - critical for security.
     
     Dynamic note: End-turn suggestion shown only when no meaningful actions remain.
