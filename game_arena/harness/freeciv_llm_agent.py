@@ -494,9 +494,34 @@ class FreeCivLLMAgent(
 
     # Generate model response
     self._num_model_calls += 1
-    response = await asyncio.to_thread(
-        self.model.generate_with_text_input, prompt_input
+    call_start = time.time()
+    absl_logging.info(
+        "LLM CALL START model=%s turn=%s prompt_tokens≈%d calls=%d",
+        getattr(self.model, 'model_name', '<unknown>'),
+        getattr(state, 'turn', None),
+        self._last_prompt_tokens,
+        self._num_model_calls,
     )
+    try:
+      response = await asyncio.to_thread(
+          self.model.generate_with_text_input, prompt_input
+      )
+    except Exception as e:  # Ensure exceptions are logged with stack
+      absl_logging.error(
+          "LLM CALL ERROR model=%s error=%s",
+          getattr(self.model, 'model_name', '<unknown>'),
+          str(e),
+          exc_info=True,
+      )
+      raise
+    finally:
+      duration = time.time() - call_start
+      absl_logging.info(
+          "LLM CALL END model=%s duration=%.2fs calls=%d",
+          getattr(self.model, 'model_name', '<unknown>'),
+          duration,
+          self._num_model_calls,
+      )
 
     self._last_response_tokens = _approx_tokens(getattr(response, "main_response", ""))
     self._total_response_tokens += self._last_response_tokens
@@ -578,9 +603,35 @@ class FreeCivLLMAgent(
 
       # Generate response with rethinking context
       try:
+        rethink_start = time.time()
+        absl_logging.debug(
+            "LLM RETHINK START model=%s attempt=%d",
+            getattr(self.model, 'model_name', '<unknown>'),
+            attempt + 1,
+        )
+        # Also emit at INFO so runtime logs include rethinking start/end
+        absl_logging.info(
+            "LLM RETHINK START model=%s attempt=%d",
+            getattr(self.model, 'model_name', '<unknown>'),
+            attempt + 1,
+        )
         response = await asyncio.to_thread(
             self.model.generate_with_text_input,
-            rethink_prompt
+            rethink_prompt,
+        )
+        rethink_duration = time.time() - rethink_start
+        absl_logging.debug(
+            "LLM RETHINK END model=%s attempt=%d duration=%.2fs",
+            getattr(self.model, 'model_name', '<unknown>'),
+            attempt + 1,
+            rethink_duration,
+        )
+        # Also emit at INFO so runtime logs include rethinking start/end
+        absl_logging.info(
+            "LLM RETHINK END model=%s attempt=%d duration=%.2fs",
+            getattr(self.model, 'model_name', '<unknown>'),
+            attempt + 1,
+            rethink_duration,
         )
 
         # Log response
@@ -617,12 +668,19 @@ class FreeCivLLMAgent(
         )
 
       except Exception as e:
-        absl_logging.error(f"Rethinking attempt {attempt + 1} failed: {e}")
+        absl_logging.error(
+            "Rethinking attempt %d raised exception: %s",
+            attempt + 1,
+            str(e),
+            exc_info=True,
+        )
         previous_failures.append({
             "error": str(e),
             "reason": "Exception during rethinking",
-            "attempt": len(previous_failures) + attempt + 1
+            "attempt": len(previous_failures) + attempt + 1,
         })
+        # Try next attempt
+        continue
 
     # All rethinking attempts failed - return None
     absl_logging.warning(
