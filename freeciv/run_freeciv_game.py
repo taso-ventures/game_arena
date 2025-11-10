@@ -1092,19 +1092,22 @@ async def run_freeciv_game():
         # In FreeCiv, both players act during the same game turn and must call
         # end_turn when finished. The civserver only advances the turn when ALL
         # players have ended their turn.
-        print(colored(f"\nStarting FreeCiv LLM vs LLM game (max {_MAX_TURNS.value} turns)...", "green"))
+        print(colored(f"\nStarting FreeCiv LLM vs LLM game (max {_MAX_TURNS.value} loop iterations)...", "green"))
         print(colored("Using simultaneous turn model: both players act concurrently per turn", "blue"))
         print("=" * 60)
 
+        # game_turn: Loop iteration counter (1 to max_turns)
+        # turns_completed: Actual FreeCiv server turn advancements (increments only when server turn increases)
+        # Note: game_turn != turns_completed when server fails to advance (e.g., missing end_turn calls)
         game_turn = 1
         game_over = False
         turns_completed = 0
 
         while game_turn <= _MAX_TURNS.value and not game_over:
             try:
-                # Display turn header
+                # Display turn header (game_turn = loop iteration number, not necessarily FreeCiv server turn)
                 print(colored(f"\n{'=' * 60}", "cyan"))
-                print(colored(f"GAME TURN {game_turn}", "cyan", attrs=['bold']))
+                print(colored(f"LOOP ITERATION {game_turn} (Server turns completed: {turns_completed})", "cyan", attrs=['bold']))
                 print(colored(f"{'=' * 60}", "cyan"))
 
                 # Check for game over before executing turn
@@ -1198,16 +1201,16 @@ async def run_freeciv_game():
                     game_over = True
                     break
 
-                # Log turn summary
+                # Log turn summary (game_turn here is the loop iteration number)
                 if not isinstance(player1_result, Exception) and not isinstance(player2_result, Exception):
                     p1r = cast(Dict[str, Any], player1_result)
                     p2r = cast(Dict[str, Any], player2_result)
 
                     logger.info(
-                        f"Turn {game_turn} completed: P1={p1r['action_count']} actions, "
+                        f"Loop iteration {game_turn} completed: P1={p1r['action_count']} actions, "
                         f"P2={p2r['action_count']} actions, duration={turn_duration:.1f}s"
                     )
-                    print(colored(f"\n📊 Turn {game_turn} Summary:", "cyan"))
+                    print(colored(f"\n📊 Loop Iteration {game_turn} Summary:", "cyan"))
                     print(
                         f"  Player 1: {p1r['action_count']} actions, "
                         f"ended_turn: {p1r['ended_turn']}, "
@@ -1254,25 +1257,29 @@ async def run_freeciv_game():
                     new_turn = state.get('turn', game_turn)
 
                     if new_turn > game_turn:
-                        logger.info(f"Turn advanced: {game_turn} → {new_turn}")
+                        logger.info(f"FreeCiv server turn advanced: {game_turn} → {new_turn} (turns_completed: {turns_completed} → {turns_completed + 1})")
                         print(colored(
-                            f"✓ Turn advanced: {game_turn} → {new_turn}",
+                            f"✓ FreeCiv server turn advanced: {game_turn} → {new_turn}",
                             "green",
                             attrs=['bold']
                         ))
                         game_turn = new_turn
                         turns_completed += 1
                     elif new_turn == game_turn:
-                        logger.warning(f"Turn did not advance (still at turn {game_turn})")
+                        logger.warning(f"FreeCiv server turn did not advance (still at turn {game_turn}, turns_completed={turns_completed})")
                         print(colored(
-                            f"⚠️ Turn did not advance (still at turn {game_turn})",
+                            f"⚠️ FreeCiv server turn did not advance (still at turn {game_turn})",
                             "yellow"
                         ))
                         print(colored(
                             "   This may indicate players did not call end_turn, or server issue",
                             "yellow"
                         ))
-                        # Still increment to avoid infinite loop
+                        print(colored(
+                            f"   Loop will continue to iteration {game_turn + 1} (turns_completed stays at {turns_completed})",
+                            "yellow"
+                        ))
+                        # Still increment loop counter to avoid infinite loop, but don't increment turns_completed
                         game_turn += 1
                     else:
                         logger.warning(f"Unexpected turn value: {new_turn} (expected >= {game_turn})")
@@ -1289,22 +1296,28 @@ async def run_freeciv_game():
                     game_turn += 1
 
             except Exception as e:
-                logger.error(f"Error in game turn {game_turn}: {e}")
-                print(colored(f"❌ Error in game turn {game_turn}: {e}", "red"))
+                logger.error(f"Error in loop iteration {game_turn}: {e}")
+                print(colored(f"❌ Error in loop iteration {game_turn}: {e}", "red"))
                 if _VERBOSE.value:
                     import traceback
                     traceback.print_exc()
                 break
 
         # Game end summary
-        logger.info(f"Game ended: turns_completed={turns_completed}, final_turn={game_turn}")
+        # turns_completed = actual FreeCiv server turn advancements
+        # game_turn = final loop iteration number
+        logger.info(f"Game ended: server_turns_completed={turns_completed}, loop_iterations={game_turn}")
         print(colored(f"\n{'=' * 60}", "cyan"))
         if game_turn > _MAX_TURNS.value:
-            logger.info(f"Game ended after {_MAX_TURNS.value} turns (max limit)")
-            print(colored(f"⏰ Game ended after {_MAX_TURNS.value} turns (max limit)", "yellow"))
+            logger.info(f"Game ended after {_MAX_TURNS.value} loop iterations (max limit)")
+            print(colored(f"⏰ Game ended after {_MAX_TURNS.value} loop iterations (max limit)", "yellow"))
 
-        print(colored(f"Game completed. Turns played: {turns_completed}", "blue"))
-        print(colored(f"Final turn number: {game_turn}", "blue"))
+        print(colored(f"✅ Game completed successfully!", "green"))
+        print(colored(f"   Loop iterations run: {game_turn}", "blue"))
+        print(colored(f"   FreeCiv server turns completed: {turns_completed}", "blue"))
+        if turns_completed < game_turn:
+            print(colored(f"   ⚠️  Note: {game_turn - turns_completed} iteration(s) did not advance the server turn", "yellow"))
+            print(colored(f"       (This occurs when players don't both call end_turn or server has issues)", "yellow"))
 
         # Disconnect both proxies
         await proxy1.disconnect()
