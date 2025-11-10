@@ -903,11 +903,11 @@ class FreeCivLLMAgent(
     Returns:
       Parsed FreeCivAction or List[FreeCivAction]
     """
-    # PRIORITY 1: Try JSON parsing first (models usually copy JSON legal actions list)
+    # JSON parsing ONLY - models should always respond with JSON
     # Support multiple forms:
-    # 1) JSON array: [{"type":"unit_move",...}, {"type":"end_turn"}]
-    # 2) Multiple JSON objects: {"type":"unit_move",...} and {"type":"end_turn"}
-    # 3) Single JSON object: {"type":"unit_move",...}
+    # 1) JSON array: [{"type":"unit_move","reasoning":"...",...}, {"type":"end_turn","reasoning":"..."}]
+    # 2) Multiple JSON objects: {"type":"unit_move","reasoning":"...",...} and {"type":"end_turn","reasoning":"..."}
+    # 3) Single JSON object: {"type":"unit_move","reasoning":"...",...}
     try:
       # Extract JSON array/object if present
       text = response_text.strip()
@@ -993,49 +993,14 @@ class FreeCivLLMAgent(
             absl_logging.debug("✅ Successfully parsed JSON action: %s", str(parsed)[:200])
             return action
           else:
-            absl_logging.debug("Parsed JSON action not in legal set; continuing fallbacks: %s", str(parsed)[:150])
+            absl_logging.debug("Parsed JSON action not in legal set; continuing to fallback: %s", str(parsed)[:150])
         except Exception as ex:  # pylint: disable=broad-except
           absl_logging.debug("Single JSON object parse failed: %s", str(ex)[:120])
 
     except Exception as e:
-      # Fall through to legacy parsing attempts below
-      absl_logging.debug("JSON parse attempt failed: %s", str(e))
-
-    # PRIORITY 2: Try canonical format if JSON not parsed
-    # Format examples: unit_move(103)_to(55,30) | tech_research(alphabet) | end_turn()
-    try:
-      canonical_pattern = r"[a-z_]+(?:_[a-z]+)?\([^)]+\)(?:_(?:to|target)\([^)]+\))?"
-      matches = re.findall(canonical_pattern, response_text)
-      if matches:
-        actions = []
-        skipped = 0
-        for m in matches:
-          try:
-            act = self.action_converter._parse_canonical_string(m)
-            act = self._normalize_player_action_id(act, legal_actions)
-            if self._is_action_legal(act, legal_actions):
-              actions.append(act)
-            else:
-              skipped += 1
-          except Exception:
-            skipped += 1
-            absl_logging.debug("Failed to parse canonical action: %s", m)
-        if actions:
-          absl_logging.info("✅ Parsed %d canonical action(s) from text (skipped=%d)", len(actions), skipped)
-          return actions if len(actions) > 1 else actions[0]
-    except Exception:
-      # Non-fatal - continue to legacy parsing
-      pass
-
-    # PRIORITY 3: Legacy parsing as last resort
-    try:
-      action = self.action_converter.string_to_action(response_text)
-      absl_logging.debug("✅ Successfully parsed action via string_to_action: %s", response_text[:200])
-      return action
-    except ValueError as e:
-      # All parsing failed - use fallback
+      # JSON parsing failed - use fallback
       absl_logging.warning(
-          "⚠️  All parsing failed: %s. Using strategy-aware fallback (strategy=%s)",
+          "⚠️  JSON parsing failed: %s. Using strategy-aware fallback (strategy=%s)",
           str(e)[:100],
           self.strategy
       )
@@ -1045,17 +1010,15 @@ class FreeCivLLMAgent(
       )
       absl_logging.debug("Full LLM response: %s", response_text[:500])
 
-      # Choose fallback action based on agent strategy
-      selected_fallback = self._choose_strategic_fallback(legal_actions)
-
-      absl_logging.info(
-          "📋 Fallback selected: %s (type=%s) based on %s strategy",
-          selected_fallback.action_type,
-          selected_fallback.action_type,
-          self.strategy
-      )
-
-      return selected_fallback
+    # All parsing failed - use strategic fallback
+    selected_fallback = self._choose_strategic_fallback(legal_actions)
+    absl_logging.info(
+        "📋 Fallback selected: %s (type=%s) based on %s strategy",
+        selected_fallback.action_type,
+        selected_fallback.action_type,
+        self.strategy
+    )
+    return selected_fallback
 
   def _is_valid_canonical_format(self, action_string: str) -> bool:
     """Validate that action string follows canonical format.
