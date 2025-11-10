@@ -294,7 +294,69 @@ async def execute_player_turn(
                         ))
                     break
 
+                # SOLUTION 1: Force end_turn if at action limit threshold
+                # Check BEFORE calling LLM - no point prompting if we're going to force
+                if action_count >= max_actions - 2:  # At action 18 of 20
+                    logger.warning(
+                        f"Player {player_num}: Reached action threshold ({action_count + 1}/{max_actions}), "
+                        f"forcing end_turn to ensure turn completion"
+                    )
+                    if verbose:
+                        print(colored(
+                            f"  ⚠️ Player {player_num}: Forcing end_turn at {action_count + 1}/{max_actions} actions",
+                            "yellow"
+                        ))
+                    
+                    # Create end_turn action from legal actions or manually
+                    end_turn_action = None
+                    legal_actions = turn_state.get("legal_actions", [])
+                    for legal_action in legal_actions:
+                        if legal_action.get('type') == 'end_turn':
+                            # Import FreeCivAction to create the object
+                            from game_arena.harness.freeciv_state import FreeCivAction
+                            end_turn_action = FreeCivAction(
+                                action_type='end_turn',
+                                actor_id=legal_action.get('player_id', 0),
+                                target=None,
+                                parameters={},
+                                source='player'
+                            )
+                            break
+                    
+                    if end_turn_action:
+                        try:
+                            result = await asyncio.wait_for(
+                                proxy.send_action(end_turn_action),
+                                timeout=ACTION_TIMEOUT_SECONDS
+                            )
+                            if result.get("success"):
+                                logger.info(f"Player {player_num}: Forced end_turn succeeded")
+                                actions_taken.append({
+                                    'action': end_turn_action,
+                                    'action_type': 'end_turn',
+                                    'result': result,
+                                    'action_number': action_count + 1,
+                                    'forced': True
+                                })
+                                if verbose:
+                                    print(colored(
+                                        f"    ✓ Action {action_count + 1}: end_turn (forced)",
+                                        "green"
+                                    ))
+                                break  # Exit action loop
+                            else:
+                                logger.error(f"Player {player_num}: Forced end_turn failed: {result.get('error')}")
+                        except Exception as e:
+                            logger.error(f"Player {player_num}: Forced end_turn exception: {e}")
+                    else:
+                        logger.warning(f"Player {player_num}: Could not find end_turn in legal actions")
+                    
+                    # If forcing failed, break anyway to prevent infinite loop
+                    break
+
                 # Calculate action context for agent decision-making
+                # SOLUTION 2: Enhance end_turn urgency as we approach the limit
+                # Note: We force end_turn at action 18, so urgency only applies to actions 1-17
                 actions_taken_count = len(actions_taken)
                 actions_remaining = max_actions - actions_taken_count - 1  # -1 for current action
 
@@ -302,7 +364,14 @@ async def execute_player_turn(
                     'actions_taken': max(0, actions_taken_count),  # Prevent negative
                     'actions_remaining': max(0, actions_remaining),
                     'max_actions': max_actions,
-                    'should_consider_end_turn': actions_remaining <= 3 and actions_remaining > 0  # Warn when <=3 actions left
+                    # Escalate urgency: warn at ≤5 remaining, urgent at ≤3
+                    # No CRITICAL level since we force at action 18 (before we'd reach 1 remaining)
+                    'should_consider_end_turn': actions_remaining <= 5 and actions_remaining > 0,
+                    'end_turn_urgency': (
+                        'URGENT - strongly recommend end_turn' if actions_remaining <= 3
+                        else 'consider end_turn soon' if actions_remaining <= 5
+                        else None
+                    )
                 }
 
                 # Get action from agent using CACHED turn_state
@@ -688,16 +757,63 @@ async def execute_player_turn(
                     traceback.print_exc()
                 break
 
-        # Check if we hit max actions without ending turn
-        if len(actions_taken) >= max_actions:
-            last_action_type = actions_taken[-1]['action_type'] if actions_taken else None
-            if last_action_type != 'end_turn':
-                logger.warning(f"Player {player_num} hit max actions ({max_actions}) without calling end_turn")
-                if verbose:
-                    print(colored(
-                        f"  ⚠️ Player {player_num} hit max actions ({max_actions}) without calling end_turn",
-                        "yellow"
-                    ))
+        # SOLUTION 3: Check if we hit max actions or exited loop without calling end_turn
+        # Defensively inject end_turn to ensure turn completion
+        ended_turn = any(a.get('action_type') == 'end_turn' for a in actions_taken)
+        
+        if not ended_turn:
+            logger.warning(
+                f"Player {player_num}: Loop exited without end_turn "
+                f"(actions: {len(actions_taken)}, max: {max_actions}). Injecting end_turn now."
+            )
+            if verbose:
+                print(colored(
+                    f"  ⚠️ Player {player_num}: Injecting missing end_turn",
+                    "yellow"
+                ))
+            
+            # Try to inject end_turn
+            try:
+                legal_actions = turn_state.get("legal_actions", [])
+                end_turn_action = None
+                
+                for legal_action in legal_actions:
+                    if legal_action.get('type') == 'end_turn':
+                        from game_arena.harness.freeciv_state import FreeCivAction
+                        end_turn_action = FreeCivAction(
+                            action_type='end_turn',
+                            actor_id=legal_action.get('player_id', 0),
+                            target=None,
+                            parameters={},
+                            source='player'
+                        )
+                        break
+                
+                if end_turn_action:
+                    result = await asyncio.wait_for(
+                        proxy.send_action(end_turn_action),
+                        timeout=ACTION_TIMEOUT_SECONDS
+                    )
+                    if result.get("success"):
+                        logger.info(f"Player {player_num}: Injected end_turn succeeded")
+                        actions_taken.append({
+                            'action': end_turn_action,
+                            'action_type': 'end_turn',
+                            'result': result,
+                            'action_number': len(actions_taken) + 1,
+                            'injected': True
+                        })
+                        if verbose:
+                            print(colored(
+                                f"    ✓ Injected end_turn (action {len(actions_taken)})",
+                                "green"
+                            ))
+                    else:
+                        logger.warning(f"Player {player_num}: Injected end_turn failed: {result}")
+                else:
+                    logger.warning(f"Player {player_num}: Could not find end_turn in legal actions to inject")
+            except Exception as inject_error:
+                logger.error(f"Player {player_num}: Failed to inject end_turn: {inject_error}")
 
     except Exception as e:
         error = f"Turn execution failed: {e}"

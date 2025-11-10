@@ -1266,18 +1266,33 @@ class FreeCivPromptBuilder(BasePromptBuilder):
             actions_remaining = action_context.get('actions_remaining', 0)
             max_actions = action_context.get('max_actions', 20)
             should_warn = action_context.get('should_consider_end_turn', False)
+            urgency = action_context.get('end_turn_urgency', None)
 
             formatted_actions.append(f"TURN PROGRESS: {actions_taken} actions taken, {actions_remaining} remaining (max: {max_actions})")
 
             if should_warn:
                 formatted_actions.append("")
                 formatted_actions.append("=" * 80)
-                formatted_actions.append("🔄 TURN COMPLETION CONSIDERATION")
-                formatted_actions.append("=" * 80)
-                formatted_actions.append("")
-                formatted_actions.append("End the turn when further moves are purely positional or low-impact.")
-                formatted_actions.append("Criteria met: No high-impact actions remain OR only movement/end_turn actions available.")
-                formatted_actions.append("If you have no valuable follow-up, respond with: {\"type\": \"end_turn\"}")
+                
+                # SOLUTION 2: Escalate urgency based on remaining actions
+                # Note: CRITICAL level removed since we force end_turn at action 18
+                # (before urgency would reach critical ≤1 remaining)
+                if urgency and 'URGENT' in urgency:
+                    formatted_actions.append("⚠️  URGENT: STRONGLY RECOMMEND END_TURN")
+                    formatted_actions.append("=" * 80)
+                    formatted_actions.append("")
+                    formatted_actions.append(f"You have only {actions_remaining} action(s) remaining!")
+                    formatted_actions.append("The system will force end_turn at action 18/20 to ensure turn completion.")
+                    formatted_actions.append("Unless you have a CRITICAL high-impact action, call end_turn now.")
+                    formatted_actions.append("Respond with: {\"type\": \"end_turn\"}")
+                    formatted_actions.append("")
+                else:
+                    formatted_actions.append("🔄 TURN COMPLETION CONSIDERATION")
+                    formatted_actions.append("=" * 80)
+                    formatted_actions.append("")
+                    formatted_actions.append("End the turn when further moves are purely positional or low-impact.")
+                    formatted_actions.append("Criteria met: No high-impact actions remain OR only movement/end_turn actions available.")
+                    formatted_actions.append("If you have no valuable follow-up, respond with: {\"type\": \"end_turn\"}")
                 formatted_actions.append("")
                 formatted_actions.append("Reminder: The game advances only after BOTH players choose end_turn.")
                 formatted_actions.append("=" * 80)
