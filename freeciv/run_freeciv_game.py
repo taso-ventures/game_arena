@@ -757,26 +757,24 @@ async def execute_player_turn(
                     traceback.print_exc()
                 break
 
-        # SOLUTION 3: Check if we hit max actions or exited loop without calling end_turn
-        # Defensively inject end_turn to ensure turn completion
+
+        # SOLUTION 3: Improved Defensive Injection
+        # Re-fetch legal actions before injecting end_turn, only inject if still legal
         ended_turn = any(a.get('action_type') == 'end_turn' for a in actions_taken)
-        
         if not ended_turn:
             logger.warning(
-                f"Player {player_num}: Loop exited without end_turn "
-                f"(actions: {len(actions_taken)}, max: {max_actions}). Injecting end_turn now."
+                f"Player {player_num}: Loop exited without end_turn (actions: {len(actions_taken)}, max: {max_actions}). Attempting improved injection."
             )
             if verbose:
                 print(colored(
-                    f"  ⚠️ Player {player_num}: Injecting missing end_turn",
+                    f"  ⚠️ Player {player_num}: Injecting missing end_turn (re-fetching legal actions)",
                     "yellow"
                 ))
-            
-            # Try to inject end_turn
             try:
-                legal_actions = turn_state.get("legal_actions", [])
+                # Re-fetch latest legal actions from server
+                refreshed_state = await proxy.get_state()
+                legal_actions = refreshed_state.get("legal_actions", [])
                 end_turn_action = None
-                
                 for legal_action in legal_actions:
                     if legal_action.get('type') == 'end_turn':
                         from game_arena.harness.freeciv_state import FreeCivAction
@@ -788,14 +786,13 @@ async def execute_player_turn(
                             source='player'
                         )
                         break
-                
                 if end_turn_action:
                     result = await asyncio.wait_for(
                         proxy.send_action(end_turn_action),
                         timeout=ACTION_TIMEOUT_SECONDS
                     )
                     if result.get("success"):
-                        logger.info(f"Player {player_num}: Injected end_turn succeeded")
+                        logger.info(f"Player {player_num}: Injected end_turn succeeded (improved)")
                         actions_taken.append({
                             'action': end_turn_action,
                             'action_type': 'end_turn',
@@ -810,8 +807,10 @@ async def execute_player_turn(
                             ))
                     else:
                         logger.warning(f"Player {player_num}: Injected end_turn failed: {result}")
+                        logger.warning(f"Player {player_num}: Server response: {result}")
+                        logger.warning(f"Player {player_num}: Legal actions at injection: {legal_actions}")
                 else:
-                    logger.warning(f"Player {player_num}: Could not find end_turn in legal actions to inject")
+                    logger.warning(f"Player {player_num}: Could not find end_turn in refreshed legal actions to inject")
             except Exception as inject_error:
                 logger.error(f"Player {player_num}: Failed to inject end_turn: {inject_error}")
 
