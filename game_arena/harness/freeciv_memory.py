@@ -342,10 +342,10 @@ class MemorySummarizer:
     elif action.action_type == "unit_attack":
       summary = f"Attacked with {action.source}"
     elif action.action_type == "city_production":
-      summary = (
-          f"Set {action.source} to produce"
-          f" {action.target.get('value', 'unknown')}"
-      )
+      target_value = "unknown"
+      if action.target and isinstance(action.target, dict):
+        target_value = action.target.get('value', 'unknown')
+      summary = f"Set {action.source} to produce {target_value}"
     elif action.action_type == "unit_fortify":
       summary = f"Fortified {action.source}"
     else:

@@ -23,10 +23,12 @@ Example usage:
 """
 
 import asyncio
+import json
 import logging
-import random
-import time
 import math
+import random
+import re
+import time
 from typing import Any, Dict, List, Mapping, Optional, TypedDict, cast
 
 from absl import logging as absl_logging
@@ -158,6 +160,10 @@ class FreeCivLLMAgent(
     # Store last LLM response text & last selected action string for richer Kaggle extras
     self._last_response_text: Optional[str] = None
     self._last_selected_action_string: Optional[str] = None
+    # Buffer for multi-action responses: agent can return multiple planned actions
+    # in one LLM response; we store the remaining actions here and consume them
+    # on subsequent get_action_async() calls to avoid extra LLM requests.
+    self._planned_actions: List[FreeCivAction] = []
 
     absl_logging.info(
         "FreeCivLLMAgent initialized: model=%s, strategy=%s, rethinking=%s",
@@ -533,15 +539,37 @@ class FreeCivLLMAgent(
         self._total_response_tokens,
     )
 
-    # Log truncated response for diagnostics
-    absl_logging.info("🤖 LLM response (first 300 chars): %s", response.main_response[:300])
-    if len(response.main_response) > 300:
-      absl_logging.debug(
-          "Full LLM response (%d chars)", len(response.main_response)
-      )
+    # Log full response for diagnostics
+    absl_logging.info("🤖 LLM response (%d chars):\n%s", len(response.main_response), response.main_response)
 
-    # Parse response
-    selected_action = self._parse_llm_response(response.main_response, legal_actions)
+    # Parse response (may return single FreeCivAction or a list of them)
+    parsed = self._parse_llm_response(response.main_response, legal_actions)
+
+    # If model returned multiple planned actions, buffer remaining legal ones
+    if isinstance(parsed, list):
+      if not parsed:
+        raise ValueError("Model returned empty action list")
+      legal_planned: List[FreeCivAction] = [
+          a for a in parsed if self._is_action_legal(a, legal_actions)
+      ]
+      discarded = len(parsed) - len(legal_planned)
+      if not legal_planned:
+        absl_logging.warning(
+            "All planned actions were illegal (%d discarded); using strategic fallback",
+            discarded
+        )
+        selected_action = self._choose_strategic_fallback(legal_actions)
+      else:
+        selected_action = legal_planned[0]
+        self._planned_actions = legal_planned[1:]
+        absl_logging.info(
+            "Parsed %d planned legal actions; executing first and buffering %d (discarded=%d)",
+            1 + len(self._planned_actions),
+            len(self._planned_actions),
+            discarded,
+        )
+    else:
+      selected_action = parsed
 
     # Persist response text & action string for __call__ extras
     try:
@@ -554,7 +582,7 @@ class FreeCivLLMAgent(
       self._last_response_text = response.main_response
       self._last_selected_action_string = None
 
-    if selected_action not in legal_actions:
+    if not self._is_action_legal(selected_action, legal_actions):
       absl_logging.warning(
           "LLM produced illegal action '%s', falling back to first legal action",
           self.action_converter.action_to_string(selected_action)
@@ -640,10 +668,29 @@ class FreeCivLLMAgent(
             f"{response.main_response[:300]}"
         )
 
-        # Parse action from response
-        selected_action = self._parse_llm_response(
+        # Parse action(s) from response (may be a list)
+        parsed = self._parse_llm_response(
             response.main_response, legal_actions
         )
+        if isinstance(parsed, list):
+          if not parsed:
+            absl_logging.warning("Rethink returned empty action list")
+            continue
+          valid_actions = [a for a in parsed if a in legal_actions]
+          if not valid_actions:
+            absl_logging.warning("Rethink produced only illegal actions; skipping this attempt")
+            continue
+          selected_action = valid_actions[0]
+          # Buffer remaining valid actions in front of existing buffer
+          self._planned_actions = valid_actions[1:] + self._planned_actions
+          absl_logging.info(
+              "Rethink produced %d valid actions; executing first and buffering %d (discarded=%d)",
+              1 + len(valid_actions[1:]),
+              len(valid_actions[1:]),
+              len(parsed) - len(valid_actions),
+          )
+        else:
+          selected_action = parsed
 
         # Validate against legal actions
         if selected_action in legal_actions:
@@ -795,27 +842,200 @@ class FreeCivLLMAgent(
         'response_total': self._total_response_tokens,
     }
 
-  def _parse_llm_response(
-      self, response_text: str, legal_actions: List[FreeCivAction]
+  def _is_action_legal(
+      self, action: FreeCivAction, legal_actions: List[FreeCivAction]
+  ) -> bool:
+    """Check if action is legal using semantic equality.
+
+    Args:
+      action: Action to check
+      legal_actions: List of legal actions
+
+    Returns:
+      True if action matches any legal action semantically
+    """
+    for legal_action in legal_actions:
+      if self.action_converter._actions_equal(action, legal_action):
+        return True
+    return False
+
+  def _normalize_player_action_id(
+      self, action: FreeCivAction, legal_actions: List[FreeCivAction]
   ) -> FreeCivAction:
+    """Normalize actor_id for player-level actions.
+
+    Player-level actions (end_turn, tech_research) may have actor_id=0
+    from JSON parsing but need the actual player_id from legal actions.
+
+    Args:
+      action: Action to normalize
+      legal_actions: List of legal actions to extract player_id from
+
+    Returns:
+      Action with corrected actor_id
+    """
+    if action.action_type in ["end_turn", "tech_research", "pass", "skip"]:
+      # Find a matching legal action to get the correct player_id
+      for legal in legal_actions:
+        if legal.action_type == action.action_type:
+          # Update actor_id to match legal action
+          return FreeCivAction(
+              action_type=action.action_type,
+              actor_id=legal.actor_id,
+              target=action.target,
+              parameters=action.parameters,
+              source=action.source,
+              confidence=action.confidence,
+              parse_method=action.parse_method,
+              strategic_score=getattr(action, 'strategic_score', 1.0),
+          )
+    return action
+
+  def _parse_llm_response(
+    self, response_text: str, legal_actions: List[FreeCivAction]
+  ):
     """Parse LLM response to FreeCivAction.
 
     Args:
-      response_text: Raw LLM response text (expected to be JSON)
+      response_text: Raw LLM response text
       legal_actions: List of legal actions for validation
 
     Returns:
-      Parsed FreeCivAction
+      Parsed FreeCivAction or List[FreeCivAction]
     """
-    # Try to parse JSON directly from the response
+    # PRIORITY 1: Try JSON parsing first (models usually copy JSON legal actions list)
+    # Support multiple forms:
+    # 1) JSON array: [{"type":"unit_move",...}, {"type":"end_turn"}]
+    # 2) Multiple JSON objects: {"type":"unit_move",...} and {"type":"end_turn"}
+    # 3) Single JSON object: {"type":"unit_move",...}
+    try:
+      # Extract JSON array/object if present
+      text = response_text.strip()
+      
+      # Try to extract JSON from various formats
+      # 1. Code fences with json marker
+      if '```json' in text:
+        m = re.search(r'```json\s*(\[[\s\S]*?\]|\{[\s\S]*?\})\s*```', text)
+        if m:
+          text = m.group(1)
+      # 2. Generic code fences
+      elif '```' in text:
+        m = re.search(r'```\s*(\[[\s\S]*?\]|\{[\s\S]*?\})\s*```', text)
+        if m:
+          text = m.group(1)
+      # 3. Naked JSON - try array first, then fall back to object(s)
+      else:
+        # Try to find a JSON array first
+        m = re.search(r'\[[\s\S]*?\]', text)
+        if m:
+          text = m.group(0)
+        else:
+          # Try to find multiple JSON objects separated by text (e.g., "and", commas)
+          # This handles cases like: {"type":"a"} and {"type":"b"}
+          json_objects = re.findall(r'\{[^{}]*\}', text)
+          if len(json_objects) > 1:
+            # Reconstruct as a JSON array
+            text = '[' + ','.join(json_objects) + ']'
+          elif json_objects:
+            # Single object
+            text = json_objects[0]
+
+      # Clean up trailing commas before closing brackets (invalid JSON)
+      text = re.sub(r',(\s*[}\]])', r'\1', text)
+
+      absl_logging.debug(f"🔍 Attempting JSON parse: text_length={len(text)}, starts_with={text[:50] if text else 'empty'}")
+      parsed = json.loads(text)
+      absl_logging.debug(f"✅ JSON parsed successfully: type={type(parsed).__name__}, is_list={isinstance(parsed, list)}")
+
+      # If it's a list, parse each element into FreeCivAction, skipping invalids
+      if isinstance(parsed, list):
+        absl_logging.info(f"📋 Processing JSON array with {len(parsed)} items")
+        actions: List[FreeCivAction] = []
+        skipped = 0
+        for idx, item in enumerate(parsed):
+          if not isinstance(item, dict):
+            skipped += 1
+            absl_logging.debug(f"  Item {idx}: skipped (not a dict)")
+            continue
+          try:
+            act = self.action_converter._json_to_action(item)
+            absl_logging.debug(f"  Item {idx}: converted to {act.action_type}(actor={act.actor_id})")
+            # Normalize player-level action IDs
+            act = self._normalize_player_action_id(act, legal_actions)
+            # Only keep actions that are legal now; discard others
+            if self._is_action_legal(act, legal_actions):
+              actions.append(act)
+              absl_logging.debug(f"  Item {idx}: ✓ legal, added to list")
+            else:
+              skipped += 1
+              absl_logging.debug(f"  Item {idx}: ✗ not legal, skipped")
+          except Exception as ex:  # pylint: disable=broad-except
+            skipped += 1
+            absl_logging.debug(f"  Item {idx}: parse failed - {str(ex)[:120]}")
+        if actions:
+          absl_logging.info(
+              "✅ Parsed multi-action JSON: valid=%d skipped=%d", len(actions), skipped
+          )
+          # Always return as list if we got multiple actions from JSON array
+          return actions
+        else:
+          absl_logging.warning(
+              "⚠️  Multi-action JSON contained no valid legal actions (skipped=%d) – falling back", skipped
+          )
+
+      # Otherwise treat as single action object
+      if isinstance(parsed, dict):
+        try:
+          action = self.action_converter._json_to_action(parsed)
+          # Normalize player-level action IDs
+          action = self._normalize_player_action_id(action, legal_actions)
+          if self._is_action_legal(action, legal_actions):
+            absl_logging.debug("✅ Successfully parsed JSON action: %s", str(parsed)[:200])
+            return action
+          else:
+            absl_logging.debug("Parsed JSON action not in legal set; continuing fallbacks: %s", str(parsed)[:150])
+        except Exception as ex:  # pylint: disable=broad-except
+          absl_logging.debug("Single JSON object parse failed: %s", str(ex)[:120])
+
+    except Exception as e:
+      # Fall through to legacy parsing attempts below
+      absl_logging.debug("JSON parse attempt failed: %s", str(e))
+
+    # PRIORITY 2: Try canonical format if JSON not parsed
+    # Format examples: unit_move(103)_to(55,30) | tech_research(alphabet) | end_turn()
+    try:
+      canonical_pattern = r"[a-z_]+(?:_[a-z]+)?\([^)]+\)(?:_(?:to|target)\([^)]+\))?"
+      matches = re.findall(canonical_pattern, response_text)
+      if matches:
+        actions = []
+        skipped = 0
+        for m in matches:
+          try:
+            act = self.action_converter._parse_canonical_string(m)
+            act = self._normalize_player_action_id(act, legal_actions)
+            if self._is_action_legal(act, legal_actions):
+              actions.append(act)
+            else:
+              skipped += 1
+          except Exception:
+            skipped += 1
+            absl_logging.debug("Failed to parse canonical action: %s", m)
+        if actions:
+          absl_logging.info("✅ Parsed %d canonical action(s) from text (skipped=%d)", len(actions), skipped)
+          return actions if len(actions) > 1 else actions[0]
+    except Exception:
+      # Non-fatal - continue to legacy parsing
+      pass
+
+    # PRIORITY 3: Legacy parsing as last resort
     try:
       action = self.action_converter.string_to_action(response_text)
-      absl_logging.debug("✅ Successfully parsed JSON action: %s", response_text[:200])
+      absl_logging.debug("✅ Successfully parsed action via string_to_action: %s", response_text[:200])
       return action
     except ValueError as e:
-      # JSON parsing failed - use fallback
+      # All parsing failed - use fallback
       absl_logging.warning(
-          "⚠️  JSON parsing failed: %s. Using strategy-aware fallback (strategy=%s)",
+          "⚠️  All parsing failed: %s. Using strategy-aware fallback (strategy=%s)",
           str(e)[:100],
           self.strategy
       )
@@ -846,7 +1066,6 @@ class FreeCivLLMAgent(
     Returns:
       True if valid canonical format, False otherwise
     """
-    import re
 
     # Basic structure check: word_word(number) with optional _target(...) or _to(...)
     canonical_pattern = r'^[a-z_]+(?:_[a-z]+)?\([^)]+\)(?:_(?:to|target)\([^)]+\))?$'
@@ -1049,6 +1268,31 @@ class FreeCivLLMAgent(
     # NEW: Update turn state tracking (detects turn changes, resets counters)
     self.on_state_update(observation)
     self.queries_without_action += 1
+
+    # If we have a buffer of planned actions from a previous multi-action
+    # LLM response, consume and return the next planned action immediately
+    if self._planned_actions:
+      # Validate buffered actions against current legal actions before use
+      current_legal = state.get_legal_actions(player_id)
+      while self._planned_actions:
+        candidate = self._planned_actions.pop(0)
+        if candidate in current_legal:
+            absl_logging.info(
+                "Using preplanned action from buffer: %s (remaining=%d)",
+                getattr(candidate, 'action_type', '<unknown>'),
+                len(self._planned_actions)
+            )
+            self.on_action_taken(candidate)
+            self._record_action_in_memory(candidate, observation, state)
+            return candidate
+        else:
+            try:
+              absl_logging.debug(
+                  "Discarding buffered illegal/stale action: %s", self.action_converter.action_to_string(candidate)
+              )
+            except Exception:
+              absl_logging.debug("Discarding buffered illegal/stale action (string conversion failed)")
+      # Fall through to normal generation if no valid buffered actions remain
 
     # NEW: Check heuristic end_turn condition BEFORE calling LLM
     # This provides fallback logic when units are exhausted, action limit approached,
