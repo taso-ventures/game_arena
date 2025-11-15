@@ -543,7 +543,8 @@ class FreeCivLLMAgent(
     )
 
     # Log full response for diagnostics
-    absl_logging.info("🤖 LLM response (%d chars):\n%s", len(response.main_response), response.main_response)
+    model_name = getattr(self.model, 'model_name', '<unknown>')
+    absl_logging.info("🤖 LLM response (%d chars) from model %s:\n%s", len(response.main_response), model_name, response.main_response)
 
     # Parse response (may return single FreeCivAction or a list of them)
     parsed = self._parse_llm_response(response.main_response, legal_actions)
