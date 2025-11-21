@@ -11,10 +11,6 @@ services:
       # Cache pip packages
       - pip-cache:/root/.cache/pip
     environment:
-      # LLM API Keys (load from .env file)
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       # FreeCiv3D Server Connection
       - FREECIV_SERVER_URL=${FREECIV_SERVER_URL:-http://host.docker.internal:8080}
       - FREECIV_WS_URL=${FREECIV_WS_URL:-ws://host.docker.internal:4002}

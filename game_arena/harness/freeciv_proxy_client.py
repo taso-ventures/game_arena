@@ -1155,6 +1155,19 @@ class FreeCivProxyClient:
                   # Record success with circuit breaker
                   self.circuit_breaker.record_success()
 
+                  # Robustness: if we see that the game has started (turn >= 1),
+                  # ensure game_ready is marked even if the explicit game_ready
+                  # broadcast was delayed or dropped in transit.
+                  try:
+                      turn_val = game_state.get("turn")
+                      if isinstance(turn_val, int) and turn_val >= 1 and not self.game_ready_event.is_set():
+                          self.game_ready = True
+                          self.game_ready_event.set()
+                          logger.info("✅ Game considered ready based on state_update (turn >= 1); event set")
+                  except Exception as _e:
+                      # Never fail state retrieval due to readiness heuristic
+                      logger.debug(f"Readiness heuristic check failed (non-critical): {_e}")
+
                   # Protect cache write and eviction with async lock
                   async with self._state_cache_lock:
                       # Evict old cache entries if limit exceeded using LRU
@@ -1287,6 +1300,7 @@ class FreeCivProxyClient:
 
           # Log action being sent for diagnostics
           logger.info(f"📤 Sending {action.action_type} action (actor={action.actor_id})")
+          send_t0 = time.time()
           await self.connection_manager.send_message(message_str)
           # Increased timeout to 60s for actions (from default 30s)
           # Actions like unit_build_city may take longer to process server-side
@@ -1294,6 +1308,7 @@ class FreeCivProxyClient:
               ["action_result", "action_accepted", "action_rejected", "error"],  # Added "error"
               timeout=60.0
           )
+          recv_t1 = time.time()
 
           if response:
               # Record success with circuit breaker
@@ -1302,6 +1317,9 @@ class FreeCivProxyClient:
               # Normalize response format for backward compatibility
               msg_type = response.get("type", "")
               if msg_type == "action_accepted":
+                  logger.info(
+                      f"⏱️ Action latency: {int((recv_t1 - send_t0)*1000)} ms from send to acceptance"
+                  )
                   # New format - normalize to old format
                   return {
                       "success": True,
@@ -1354,6 +1372,10 @@ class FreeCivProxyClient:
                       self.circuit_breaker.record_failure()
                       raise RuntimeError(f"Server error [{error_code}]: {error_message}")
               else:
+                  # Record generic latency when old format carries result directly
+                  logger.info(
+                      f"⏱️ Action latency: {int((recv_t1 - send_t0)*1000)} ms (type={msg_type})"
+                  )
                   # Old format or unknown - return as-is
                   return response
 
@@ -1531,6 +1553,7 @@ class FreeCivProxyClient:
 
       Messages are placed in self._incoming_messages queue for consumption by other methods.
       """
+      message_count = 0
       while self.connection_manager.state == ConnectionState.CONNECTED:
           try:
               # Receive message with short timeout to allow periodic state checks
@@ -1538,9 +1561,48 @@ class FreeCivProxyClient:
                   self.connection_manager.receive_message(), timeout=1.0
               )
 
-              if message:
-                  # Put message into queue for processing (non-blocking)
-                  await self._incoming_messages.put(message)
+              if not message:
+                  continue
+
+              message_count += 1
+              logger.debug(f"📨 Incoming message #{message_count}: {message[:120]}...")
+
+              # Fast-path: if JSON, parse and immediately handle event-type messages
+              msg_stripped = message.strip()
+              if msg_stripped.startswith('{'):
+                  try:
+                      data = safe_json_loads(msg_stripped)
+                      msg_type = data.get("type")
+
+                      # Awaited types that senders explicitly wait for
+                      awaited_types = {"state_update", "error", "action_result", "action_accepted", "action_rejected"}
+                      # Event-style messages we want to handle eagerly
+                      event_types = {"game_ready", "conn_ping", "ping", "pong", "turn_notification"}
+
+                      if msg_type in awaited_types:
+                          # Put into queue for any waiter (e.g., send_action/_wait_for_response)
+                          await self._incoming_messages.put(message)
+                          # Also route to handler for logging/side effects (non-blocking semantics)
+                          if msg_type != "state_update":  # state_update is processed by waiter path
+                              await self.message_handler.handle_message(data)
+                          continue
+
+                      if msg_type in event_types:
+                          if msg_type == "game_ready":
+                              logger.warning(f"🎮 GAME_READY DETECTED in incoming loop at message #{message_count}, timestamp={time.time():.1f}")
+                          await self.message_handler.handle_message(data)
+                          continue
+
+                      # Fallback: route unknown JSON message types to handler
+                      await self.message_handler.handle_message(data)
+                      continue
+
+                  except Exception as parse_err:
+                      logger.debug(f"Incoming loop JSON parse issue (non-critical): {parse_err}")
+                      # Fall through and enqueue raw for any potential waiter
+
+              # Non-JSON or parse-failed: still enqueue raw for any waiter (harmless)
+              await self._incoming_messages.put(message)
 
           except asyncio.TimeoutError:
               # Timeout is expected - allows us to check connection state periodically

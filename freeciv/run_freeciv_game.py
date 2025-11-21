@@ -23,7 +23,7 @@ import os
 import sys
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 import webbrowser
 import requests
@@ -53,6 +53,13 @@ from game_arena.harness.model_generation_sdk import (
     OpenAIChatCompletionsModel,
     AnthropicModel
 )
+from game_arena.harness.model_generation_http import (
+    OllamaModel,
+    HuggingFaceModel,
+    XAIModel,
+    TogetherAIModel,
+    MoonshotModel
+)
 
 colored = termcolor.colored
 
@@ -60,13 +67,15 @@ colored = termcolor.colored
 _MAX_TURNS = flags.DEFINE_integer(
     "turns", 50, "Maximum number of turns to play"
 )
-_PLAYER1_MODEL = flags.DEFINE_enum(
-    "player1", "gemini", ["gemini", "openai", "anthropic"],
-    "Model for Player 1"
+_PLAYER1_MODEL = flags.DEFINE_string(
+    "player1",
+    "gemini",
+    "Model provider for Player 1. Supports 'provider' or 'provider:model' (e.g., 'ollama:mistral' or 'ollama:llama3.2:3b').",
 )
-_PLAYER2_MODEL = flags.DEFINE_enum(
-    "player2", "openai", ["gemini", "openai", "anthropic"],
-    "Model for Player 2"
+_PLAYER2_MODEL = flags.DEFINE_string(
+    "player2",
+    "openai",
+    "Model provider for Player 2. Supports 'provider' or 'provider:model' (e.g., 'ollama:llama3.2').",
 )
 _FREECIV_HOST = flags.DEFINE_string(
     "host", "fciv-net", "FreeCiv3D server host"
@@ -129,25 +138,80 @@ def check_freeciv_server(host: str, port: int) -> bool:
         return False
 
 
-def create_model(model_type: str, api_keys: dict):
-    """Create LLM model based on type."""
-    if model_type == "gemini":
-        return AIStudioModel(
-            model_name=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            api_key=api_keys.get("gemini")
-        )
-    elif model_type == "openai":
-        return OpenAIChatCompletionsModel(
-            model_name=os.getenv("OPENAI_MODEL", "gpt-4.1"),
-            api_key=api_keys.get("openai")
-        )
-    elif model_type == "anthropic":
-        return AnthropicModel(
-            model_name=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5@20251001"),
-            api_key=api_keys.get("anthropic")
-        )
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}")
+def _parse_model_spec(spec: str) -> tuple[str, Optional[str]]:
+    """Parse provider[:model] syntax.
+
+    Examples:
+      'ollama:mistral' -> ('ollama', 'mistral')
+      'ollama:llama3.2:3b' -> ('ollama', 'llama3.2:3b')
+      'huggingface:meta-llama/Llama-3.2-3B-Instruct' -> ('huggingface', 'meta-llama/Llama-3.2-3B-Instruct')
+      'xai:grok-4' -> ('xai', 'grok-4')
+      'gemini' -> ('gemini', None)
+    """
+    parts = spec.split(':')
+    if not parts:
+        raise ValueError("Empty model spec")
+    provider = parts[0].lower()
+    if len(parts) == 1:
+        return provider, None
+    # Recombine remaining parts as model (since llama3.2:3b contains colon)
+    model_override = ':'.join(parts[1:])
+    return provider, model_override
+
+
+def create_model(model_spec: str, api_keys: dict):
+    """Create LLM model based on provider:model spec.
+
+    Args:
+      model_spec: Either provider or provider:model form.
+      api_keys: Mapping of provider -> key.
+    """
+    provider, override = _parse_model_spec(model_spec)
+
+    if provider == "gemini":
+        model_name = override or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        return AIStudioModel(model_name=model_name, api_key=api_keys.get("gemini"))
+
+    if provider == "openai":
+        model_name = override or os.getenv("OPENAI_MODEL", "gpt-4.1")
+        return OpenAIChatCompletionsModel(model_name=model_name, api_key=api_keys.get("openai"))
+
+    if provider == "anthropic":
+        model_name = override or os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5@20251001")
+        return AnthropicModel(model_name=model_name, api_key=api_keys.get("anthropic"))
+
+    if provider == "ollama":
+        # Ollama local inference. Apply default tag:
+        # If override has no ':' after first segment, append ':latest'
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        if override:
+            # If override contains no second colon part (e.g. 'mistral' or 'llama3.2') add :latest
+            # We consider a tag present if there's at least one ':' after the provider split.
+            if ':' not in override or override.endswith(':'):
+                model_name = override.rstrip(':') + ':latest'
+            else:
+                model_name = override
+        else:
+            model_name = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+        return OllamaModel(model_name=model_name, base_url=base_url)
+
+    if provider == "huggingface":
+        model_name = override or os.getenv("HF_MODEL", "meta-llama/Llama-3.2-3B-Instruct")
+        return HuggingFaceModel(model_name=model_name, api_key=api_keys.get("huggingface"))
+
+    if provider == "xai":
+        model_name = override or os.getenv("XAI_MODEL", "grok-4")
+        return XAIModel(model_name=model_name, api_key=api_keys.get("xai"), api_options={"stream": True})
+
+    if provider == "together":
+        model_name = override or os.getenv("TOGETHER_MODEL", "moonshotai/Kimi-K2-Instruct")
+        return TogetherAIModel(model_name=model_name, api_key=api_keys.get("together"))
+
+    if provider == "moonshot":
+        model_name = override or os.getenv("MOONSHOT_MODEL", "kimi-k2-thinking")
+        return MoonshotModel(model_name=model_name, api_key=api_keys.get("moonshot"))
+
+    raise ValueError(f"Unsupported provider in spec: {provider}")
 
 
 async def execute_player_turn(
@@ -190,6 +254,18 @@ async def execute_player_turn(
     last_state_refresh_time = 0  # Track when we last refreshed state
     # Track executed unit_build_city actions to prevent duplicates (gateway bug workaround)
     executed_build_city_units = set()  # Set of unit IDs that have built cities this turn
+    # Initialize variables referenced in finally/return sections for static analyzers
+    action = None  # Last attempted action
+    result: Dict[str, Any] = {}  # Last action result
+
+    # Snapshot starting token usage for this agent
+    try:
+        start_tokens = getattr(agent, 'get_token_usage', lambda: {'prompt_total': 0, 'response_total': 0})()
+        start_prompt_total = start_tokens.get('prompt_total', 0)
+        start_response_total = start_tokens.get('response_total', 0)
+    except Exception:
+        start_prompt_total = 0
+        start_response_total = 0
 
     try:
         if verbose:
@@ -218,7 +294,69 @@ async def execute_player_turn(
                         ))
                     break
 
+                # SOLUTION 1: Force end_turn if at action limit threshold
+                # Check BEFORE calling LLM - no point prompting if we're going to force
+                if action_count >= max_actions - 2:  # At action 18 of 20
+                    logger.warning(
+                        f"Player {player_num}: Reached action threshold ({action_count + 1}/{max_actions}), "
+                        f"forcing end_turn to ensure turn completion"
+                    )
+                    if verbose:
+                        print(colored(
+                            f"  ⚠️ Player {player_num}: Forcing end_turn at {action_count + 1}/{max_actions} actions",
+                            "yellow"
+                        ))
+                    
+                    # Create end_turn action from legal actions or manually
+                    end_turn_action = None
+                    legal_actions = turn_state.get("legal_actions", [])
+                    for legal_action in legal_actions:
+                        if legal_action.get('type') == 'end_turn':
+                            # Import FreeCivAction to create the object
+                            from game_arena.harness.freeciv_state import FreeCivAction
+                            end_turn_action = FreeCivAction(
+                                action_type='end_turn',
+                                actor_id=legal_action.get('player_id', 0),
+                                target=None,
+                                parameters={},
+                                source='player'
+                            )
+                            break
+                    
+                    if end_turn_action:
+                        try:
+                            result = await asyncio.wait_for(
+                                proxy.send_action(end_turn_action),
+                                timeout=ACTION_TIMEOUT_SECONDS
+                            )
+                            if result.get("success"):
+                                logger.info(f"Player {player_num}: Forced end_turn succeeded")
+                                actions_taken.append({
+                                    'action': end_turn_action,
+                                    'action_type': 'end_turn',
+                                    'result': result,
+                                    'action_number': action_count + 1,
+                                    'forced': True
+                                })
+                                if verbose:
+                                    print(colored(
+                                        f"    ✓ Action {action_count + 1}: end_turn (forced)",
+                                        "green"
+                                    ))
+                                break  # Exit action loop
+                            else:
+                                logger.error(f"Player {player_num}: Forced end_turn failed: {result.get('error')}")
+                        except Exception as e:
+                            logger.error(f"Player {player_num}: Forced end_turn exception: {e}")
+                    else:
+                        logger.warning(f"Player {player_num}: Could not find end_turn in legal actions")
+                    
+                    # If forcing failed, break anyway to prevent infinite loop
+                    break
+
                 # Calculate action context for agent decision-making
+                # SOLUTION 2: Enhance end_turn urgency as we approach the limit
+                # Note: We force end_turn at action 18, so urgency only applies to actions 1-17
                 actions_taken_count = len(actions_taken)
                 actions_remaining = max_actions - actions_taken_count - 1  # -1 for current action
 
@@ -226,7 +364,14 @@ async def execute_player_turn(
                     'actions_taken': max(0, actions_taken_count),  # Prevent negative
                     'actions_remaining': max(0, actions_remaining),
                     'max_actions': max_actions,
-                    'should_consider_end_turn': actions_remaining <= 3 and actions_remaining > 0  # Warn when <=3 actions left
+                    # Escalate urgency: warn at ≤5 remaining, urgent at ≤3
+                    # No CRITICAL level since we force at action 18 (before we'd reach 1 remaining)
+                    'should_consider_end_turn': actions_remaining <= 5 and actions_remaining > 0,
+                    'end_turn_urgency': (
+                        'URGENT - strongly recommend end_turn' if actions_remaining <= 3
+                        else 'consider end_turn soon' if actions_remaining <= 5
+                        else None
+                    )
                 }
 
                 # Get action from agent using CACHED turn_state
@@ -422,7 +567,7 @@ async def execute_player_turn(
 
                 # After retry loop - handle state refresh
                 if action_succeeded and result.get('success'):
-                    action_type = action.action_type if hasattr(action, 'action_type') else None
+                    action_type = action.action_type if (action and hasattr(action, 'action_type')) else None
 
                     # List of actions that immediately change game state
                     state_changing_actions = [
@@ -470,7 +615,7 @@ async def execute_player_turn(
                 await asyncio.sleep(3.0)
 
                 # Record action
-                action_type = action.action_type if hasattr(action, 'action_type') else 'unknown'
+                action_type = action.action_type if (action and hasattr(action, 'action_type')) else 'unknown'
                 actions_taken.append({
                     'action': action,
                     'action_type': action_type,
@@ -612,16 +757,62 @@ async def execute_player_turn(
                     traceback.print_exc()
                 break
 
-        # Check if we hit max actions without ending turn
-        if len(actions_taken) >= max_actions:
-            last_action_type = actions_taken[-1]['action_type'] if actions_taken else None
-            if last_action_type != 'end_turn':
-                logger.warning(f"Player {player_num} hit max actions ({max_actions}) without calling end_turn")
-                if verbose:
-                    print(colored(
-                        f"  ⚠️ Player {player_num} hit max actions ({max_actions}) without calling end_turn",
-                        "yellow"
-                    ))
+
+        # SOLUTION 3: Improved Defensive Injection
+        # Re-fetch legal actions before injecting end_turn, only inject if still legal
+        ended_turn = any(a.get('action_type') == 'end_turn' for a in actions_taken)
+        if not ended_turn:
+            logger.warning(
+                f"Player {player_num}: Loop exited without end_turn (actions: {len(actions_taken)}, max: {max_actions}). Attempting improved injection."
+            )
+            if verbose:
+                print(colored(
+                    f"  ⚠️ Player {player_num}: Injecting missing end_turn (re-fetching legal actions)",
+                    "yellow"
+                ))
+            try:
+                # Re-fetch latest legal actions from server
+                refreshed_state = await proxy.get_state()
+                legal_actions = refreshed_state.get("legal_actions", [])
+                end_turn_action = None
+                for legal_action in legal_actions:
+                    if legal_action.get('type') == 'end_turn':
+                        from game_arena.harness.freeciv_state import FreeCivAction
+                        end_turn_action = FreeCivAction(
+                            action_type='end_turn',
+                            actor_id=legal_action.get('player_id', 0),
+                            target=None,
+                            parameters={},
+                            source='player'
+                        )
+                        break
+                if end_turn_action:
+                    result = await asyncio.wait_for(
+                        proxy.send_action(end_turn_action),
+                        timeout=ACTION_TIMEOUT_SECONDS
+                    )
+                    if result.get("success"):
+                        logger.info(f"Player {player_num}: Injected end_turn succeeded (improved)")
+                        actions_taken.append({
+                            'action': end_turn_action,
+                            'action_type': 'end_turn',
+                            'result': result,
+                            'action_number': len(actions_taken) + 1,
+                            'injected': True
+                        })
+                        if verbose:
+                            print(colored(
+                                f"    ✓ Injected end_turn (action {len(actions_taken)})",
+                                "green"
+                            ))
+                    else:
+                        logger.warning(f"Player {player_num}: Injected end_turn failed: {result}")
+                        logger.warning(f"Player {player_num}: Server response: {result}")
+                        logger.warning(f"Player {player_num}: Legal actions at injection: {legal_actions}")
+                else:
+                    logger.warning(f"Player {player_num}: Could not find end_turn in refreshed legal actions to inject")
+            except Exception as inject_error:
+                logger.error(f"Player {player_num}: Failed to inject end_turn: {inject_error}")
 
     except Exception as e:
         error = f"Turn execution failed: {e}"
@@ -630,6 +821,15 @@ async def execute_player_turn(
             print(colored(f"  Player {player_num}: {error}", "red"))
             import traceback
             traceback.print_exc()
+
+    # Compute per-turn token deltas
+    try:
+        end_tokens = getattr(agent, 'get_token_usage', lambda: {'prompt_total': start_prompt_total, 'response_total': start_response_total})()
+        prompt_tokens_used = max(0, end_tokens.get('prompt_total', start_prompt_total) - start_prompt_total)
+        response_tokens_used = max(0, end_tokens.get('response_total', start_response_total) - start_response_total)
+    except Exception:
+        prompt_tokens_used = 0
+        response_tokens_used = 0
 
     return {
         'player': player_num,
@@ -641,6 +841,8 @@ async def execute_player_turn(
         'action_count': len(actions_taken),
         'message_count': message_count,  # Include message count for diagnostics
         'error': error,
+        'prompt_tokens': prompt_tokens_used,
+        'response_tokens': response_tokens_used,
     }
 
 
@@ -654,18 +856,24 @@ async def run_freeciv_game():
     api_keys = {
         "gemini": os.getenv("GEMINI_API_KEY"),
         "openai": os.getenv("OPENAI_API_KEY"),
-        "anthropic": os.getenv("ANTHROPIC_API_KEY")
+        "anthropic": os.getenv("ANTHROPIC_API_KEY"),
+        "xai": os.getenv("XAI_API_KEY"),
+        "together": os.getenv("TOGETHER_API_KEY"),
+        "huggingface": os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN"),
+        "moonshot": os.getenv("MOONSHOT_API_KEY"),
     }
 
     # Get LLM Gateway API token
     llm_api_token = os.getenv("LLM_API_TOKEN", _API_TOKEN.value)
 
-    # Validate required API keys
-    required_keys = [_PLAYER1_MODEL.value, _PLAYER2_MODEL.value]
-    for model_type in required_keys:
-        if not api_keys.get(model_type):
-            print(colored(f"✗ Missing API key for {model_type.upper()}", "red"))
-            print(f"Please set {model_type.upper()}_API_KEY in your .env file")
+    # Validate required API keys (skip for local providers like Ollama)
+    required_specs = [_PLAYER1_MODEL.value, _PLAYER2_MODEL.value]
+    local_providers = {"ollama"}  # Providers that don't require API keys
+    for spec in required_specs:
+        provider, _ = _parse_model_spec(spec)
+        if provider not in local_providers and not api_keys.get(provider):
+            print(colored(f"✗ Missing API key for {provider.upper()}", "red"))
+            print(f"Please set {provider.upper()}_API_KEY in your .env file")
             return False
 
     # Check FreeCiv3D server (skipping HTTP check, testing WebSocket directly)
@@ -677,6 +885,17 @@ async def run_freeciv_game():
 
         # Create SEPARATE proxy clients for each agent with nation preferences
         print(colored("Creating proxy connections for both players...", "blue"))
+        # Augment leader names with model spec for easier observer identification.
+        # Example: "AI Player 1 (ollama:llama3.2:3b)" or "AI Player 2 (gemini)"
+        p1_provider, p1_model_override = _parse_model_spec(_PLAYER1_MODEL.value)
+        p2_provider, p2_model_override = _parse_model_spec(_PLAYER2_MODEL.value)
+        # Choose display part: if override exists use provider:model, else provider.
+        p1_display_model = f"{p1_provider}:{p1_model_override}" if p1_model_override else p1_provider
+        p2_display_model = f"{p2_provider}:{p2_model_override}" if p2_model_override else p2_provider
+        # FreeCiv leader names sometimes shown in UI lists; keep concise, replace spaces with '_' to avoid parsing issues.
+        augmented_leader1 = f"{_PLAYER1_LEADER.value} ({p1_display_model})".replace('  ', ' ').strip()
+        augmented_leader2 = f"{_PLAYER2_LEADER.value} ({p2_display_model})".replace('  ', ' ').strip()
+
         proxy1 = FreeCivProxyClient(
             host=_FREECIV_HOST.value,
             port=_FREECIV_WS_PORT.value,
@@ -684,7 +903,7 @@ async def run_freeciv_game():
             game_id=game_id,  # Same game_id for both players
             api_token=llm_api_token,
             nation=_PLAYER1_NATION.value if _AUTO_SELECT_NATIONS.value else None,
-            leader_name=_PLAYER1_LEADER.value
+            leader_name=augmented_leader1
         )
 
         proxy2 = FreeCivProxyClient(
@@ -694,7 +913,7 @@ async def run_freeciv_game():
             game_id=game_id,  # Same game_id for both players
             api_token=llm_api_token,
             nation=_PLAYER2_NATION.value if _AUTO_SELECT_NATIONS.value else None,
-            leader_name=_PLAYER2_LEADER.value
+            leader_name=augmented_leader2
         )
 
         # Track timing for diagnostics
@@ -819,9 +1038,15 @@ async def run_freeciv_game():
             units1 = state1.get("units", [])
             cities1 = state1.get("cities", [])
 
-            logger.debug(f"Player 1 state: {len(players1)} players, {len(units1)} units, {len(cities1)} cities")
+            # Normalize players to a list for safe slicing/iteration (API may return dict)
+            if isinstance(players1, dict):
+                players_list = list(players1.values())
+            else:
+                players_list = list(players1)
+
+            logger.debug(f"Player 1 state: {len(players_list)} players, {len(units1)} units, {len(cities1)} cities")
             logger.debug(f"Turn: {state1.get('turn', 'unknown')}, Phase: {state1.get('game', {}).get('phase', 'unknown')}")
-            print(colored(f"Player 1 state: {len(players1)} players, {len(units1)} units, {len(cities1)} cities", "blue"))
+            print(colored(f"Player 1 state: {len(players_list)} players, {len(units1)} units, {len(cities1)} cities", "blue"))
             print(colored(f"Turn: {state1.get('turn', 'unknown')}, Phase: {state1.get('game', {}).get('phase', 'unknown')}", "blue"))
 
             # DIAGNOSTIC: Check legal_actions availability
@@ -843,8 +1068,8 @@ async def run_freeciv_game():
                 print(colored("⚠️ No legal_actions in state at initialization!", "yellow"))
 
             # Verify nation assignment
-            if players1:
-                for i, player in enumerate(players1[:2]):  # Check first 2 players
+            if players_list:
+                for i, player in enumerate(players_list[:2]):  # Check first 2 players
                     player_nation = player.get("nation", "unassigned")
                     player_name = player.get("name", f"Player {i+1}")
                     logger.debug(f"{player_name}: nation={player_nation}")
@@ -982,19 +1207,22 @@ async def run_freeciv_game():
         # In FreeCiv, both players act during the same game turn and must call
         # end_turn when finished. The civserver only advances the turn when ALL
         # players have ended their turn.
-        print(colored(f"\nStarting FreeCiv LLM vs LLM game (max {_MAX_TURNS.value} turns)...", "green"))
+        print(colored(f"\nStarting FreeCiv LLM vs LLM game (max {_MAX_TURNS.value} loop iterations)...", "green"))
         print(colored("Using simultaneous turn model: both players act concurrently per turn", "blue"))
         print("=" * 60)
 
+        # game_turn: Loop iteration counter (1 to max_turns)
+        # turns_completed: Actual FreeCiv server turn advancements (increments only when server turn increases)
+        # Note: game_turn != turns_completed when server fails to advance (e.g., missing end_turn calls)
         game_turn = 1
         game_over = False
         turns_completed = 0
 
         while game_turn <= _MAX_TURNS.value and not game_over:
             try:
-                # Display turn header
+                # Display turn header (game_turn = loop iteration number, not necessarily FreeCiv server turn)
                 print(colored(f"\n{'=' * 60}", "cyan"))
-                print(colored(f"GAME TURN {game_turn}", "cyan", attrs=['bold']))
+                print(colored(f"LOOP ITERATION {game_turn} (Server turns completed: {turns_completed})", "cyan", attrs=['bold']))
                 print(colored(f"{'=' * 60}", "cyan"))
 
                 # Check for game over before executing turn
@@ -1088,21 +1316,32 @@ async def run_freeciv_game():
                     game_over = True
                     break
 
-                # Log turn summary
+                # Log turn summary (game_turn here is the loop iteration number)
                 if not isinstance(player1_result, Exception) and not isinstance(player2_result, Exception):
-                    logger.info(f"Turn {game_turn} completed: P1={player1_result['action_count']} actions, "
-                               f"P2={player2_result['action_count']} actions, duration={turn_duration:.1f}s")
-                    print(colored(f"\n📊 Turn {game_turn} Summary:", "cyan"))
-                    print(f"  Player 1: {player1_result['action_count']} actions, "
-                          f"ended_turn: {player1_result['ended_turn']}, "
-                          f"messages: {player1_result.get('message_count', 'N/A')}")
-                    print(f"  Player 2: {player2_result['action_count']} actions, "
-                          f"ended_turn: {player2_result['ended_turn']}, "
-                          f"messages: {player2_result.get('message_count', 'N/A')}")
+                    p1r = cast(Dict[str, Any], player1_result)
+                    p2r = cast(Dict[str, Any], player2_result)
+
+                    logger.info(
+                        f"Loop iteration {game_turn} completed: P1={p1r['action_count']} actions, "
+                        f"P2={p2r['action_count']} actions, duration={turn_duration:.1f}s"
+                    )
+                    print(colored(f"\n📊 Loop Iteration {game_turn} Summary:", "cyan"))
+                    print(
+                        f"  Player 1: {p1r['action_count']} actions, "
+                        f"ended_turn: {p1r['ended_turn']}, "
+                        f"messages: {p1r.get('message_count', 'N/A')}, "
+                        f"tokens≈ {p1r.get('prompt_tokens', 0)}/{p1r.get('response_tokens', 0)} (prompt/resp)"
+                    )
+                    print(
+                        f"  Player 2: {p2r['action_count']} actions, "
+                        f"ended_turn: {p2r['ended_turn']}, "
+                        f"messages: {p2r.get('message_count', 'N/A')}, "
+                        f"tokens≈ {p2r.get('prompt_tokens', 0)}/{p2r.get('response_tokens', 0)} (prompt/resp)"
+                    )
                     print(f"  Duration: {turn_duration:.1f}s")
 
                     # Calculate total messages for the turn
-                    total_messages = player1_result.get('message_count', 0) + player2_result.get('message_count', 0)
+                    total_messages = p1r.get('message_count', 0) + p2r.get('message_count', 0)
                     if total_messages > 0:
                         # FreeCiv3D configuration: MAX_MESSAGES_PER_TURN=24 (recommended for 2-player games)
                         # Gateway burst limit is 40 msg/s, but staying under 24 is safer
@@ -1120,10 +1359,10 @@ async def run_freeciv_game():
                             ))
 
                     # Check if both players ended their turn
-                    if not player1_result['ended_turn']:
+                    if not p1r['ended_turn']:
                         logger.warning(f"Turn {game_turn}: Player 1 did not call end_turn")
                         print(colored("  ⚠️ Player 1 did not call end_turn", "yellow"))
-                    if not player2_result['ended_turn']:
+                    if not p2r['ended_turn']:
                         logger.warning(f"Turn {game_turn}: Player 2 did not call end_turn")
                         print(colored("  ⚠️ Player 2 did not call end_turn", "yellow"))
 
@@ -1133,25 +1372,29 @@ async def run_freeciv_game():
                     new_turn = state.get('turn', game_turn)
 
                     if new_turn > game_turn:
-                        logger.info(f"Turn advanced: {game_turn} → {new_turn}")
+                        logger.info(f"FreeCiv server turn advanced: {game_turn} → {new_turn} (turns_completed: {turns_completed} → {turns_completed + 1})")
                         print(colored(
-                            f"✓ Turn advanced: {game_turn} → {new_turn}",
+                            f"✓ FreeCiv server turn advanced: {game_turn} → {new_turn}",
                             "green",
                             attrs=['bold']
                         ))
                         game_turn = new_turn
                         turns_completed += 1
                     elif new_turn == game_turn:
-                        logger.warning(f"Turn did not advance (still at turn {game_turn})")
+                        logger.warning(f"FreeCiv server turn did not advance (still at turn {game_turn}, turns_completed={turns_completed})")
                         print(colored(
-                            f"⚠️ Turn did not advance (still at turn {game_turn})",
+                            f"⚠️ FreeCiv server turn did not advance (still at turn {game_turn})",
                             "yellow"
                         ))
                         print(colored(
                             "   This may indicate players did not call end_turn, or server issue",
                             "yellow"
                         ))
-                        # Still increment to avoid infinite loop
+                        print(colored(
+                            f"   Loop will continue to iteration {game_turn + 1} (turns_completed stays at {turns_completed})",
+                            "yellow"
+                        ))
+                        # Still increment loop counter to avoid infinite loop, but don't increment turns_completed
                         game_turn += 1
                     else:
                         logger.warning(f"Unexpected turn value: {new_turn} (expected >= {game_turn})")
@@ -1168,22 +1411,28 @@ async def run_freeciv_game():
                     game_turn += 1
 
             except Exception as e:
-                logger.error(f"Error in game turn {game_turn}: {e}")
-                print(colored(f"❌ Error in game turn {game_turn}: {e}", "red"))
+                logger.error(f"Error in loop iteration {game_turn}: {e}")
+                print(colored(f"❌ Error in loop iteration {game_turn}: {e}", "red"))
                 if _VERBOSE.value:
                     import traceback
                     traceback.print_exc()
                 break
 
         # Game end summary
-        logger.info(f"Game ended: turns_completed={turns_completed}, final_turn={game_turn}")
+        # turns_completed = actual FreeCiv server turn advancements
+        # game_turn = final loop iteration number
+        logger.info(f"Game ended: server_turns_completed={turns_completed}, loop_iterations={game_turn}")
         print(colored(f"\n{'=' * 60}", "cyan"))
         if game_turn > _MAX_TURNS.value:
-            logger.info(f"Game ended after {_MAX_TURNS.value} turns (max limit)")
-            print(colored(f"⏰ Game ended after {_MAX_TURNS.value} turns (max limit)", "yellow"))
+            logger.info(f"Game ended after {_MAX_TURNS.value} loop iterations (max limit)")
+            print(colored(f"⏰ Game ended after {_MAX_TURNS.value} loop iterations (max limit)", "yellow"))
 
-        print(colored(f"Game completed. Turns played: {turns_completed}", "blue"))
-        print(colored(f"Final turn number: {game_turn}", "blue"))
+        print(colored(f"✅ Game completed successfully!", "green"))
+        print(colored(f"   Loop iterations run: {game_turn}", "blue"))
+        print(colored(f"   FreeCiv server turns completed: {turns_completed}", "blue"))
+        if turns_completed < game_turn:
+            print(colored(f"   ⚠️  Note: {game_turn - turns_completed} iteration(s) did not advance the server turn", "yellow"))
+            print(colored(f"       (This occurs when players don't both call end_turn or server has issues)", "yellow"))
 
         # Disconnect both proxies
         await proxy1.disconnect()

@@ -835,6 +835,44 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         self.observation_builder = ObservationBuilder()
         self.context_manager = ContextManager()
 
+    def _compute_action_context(self, legal_actions: List[FreeCivAction]) -> Dict[str, Any]:
+        """Derive heuristic action context for dynamic guidance.
+
+        This is used when the caller doesn't supply richer turn metadata.
+        We approximate whether the agent should consider ending the turn
+        based purely on the remaining legal actions.
+
+        Heuristics for should_consider_end_turn:
+        - end_turn is available AND
+          (only move/end_turn actions remain OR no high-impact actions remain)
+        High-impact actions include: attack, build, production, research.
+
+        Args:
+            legal_actions: Current list of legal actions.
+
+        Returns:
+            Dict with keys used by _build_prioritized_actions.
+        """
+        max_actions = 20  # default fallback; real limit may come from caller
+        actions_taken = 0  # unknown here; caller can override via kwargs
+        action_types = [a.action_type.lower() for a in legal_actions]
+        end_turn_available = any(t == 'end_turn' for t in action_types)
+        high_impact_present = any(
+            any(keyword in t for keyword in ['attack', 'build', 'production', 'research'])
+            for t in action_types
+        )
+        # Only low-impact (move + end_turn) actions remain
+        low_actions_only = all(('move' in t or t == 'end_turn') for t in action_types) if action_types else False
+        # If only end_turn available, we should definitely consider ending turn
+        only_end_turn = len(action_types) == 1 and action_types[0] == 'end_turn'
+        should_consider_end_turn = end_turn_available and (low_actions_only or not high_impact_present or only_end_turn)
+        return {
+            'actions_taken': actions_taken,
+            'actions_remaining': max_actions - actions_taken,
+            'max_actions': max_actions,
+            'should_consider_end_turn': should_consider_end_turn,
+        }
+
     def build_enhanced_prompt(
         self,
         observation: ObservationData,
@@ -865,6 +903,9 @@ class FreeCivPromptBuilder(BasePromptBuilder):
 
         # Extract action context if provided
         action_context = kwargs.get('action_context', None)
+        if action_context is None:
+            # Fallback: compute heuristic context for dynamic end_turn guidance
+            action_context = self._compute_action_context(legal_actions)
 
         # Prepare observation data
         obs_dict = self._prepare_observation(observation)
@@ -1198,57 +1239,68 @@ class FreeCivPromptBuilder(BasePromptBuilder):
         formatted_actions.append("RESPONSE FORMAT REQUIREMENTS")
         formatted_actions.append("=" * 80)
         formatted_actions.append("")
-        formatted_actions.append("⚠️  CRITICAL: Respond with ONLY a JSON object, nothing else!")
+        formatted_actions.append("⚠️  CRITICAL: Respond with a JSON array of actions (preferred) or a single JSON object.")
         formatted_actions.append("")
         formatted_actions.append("✅ CORRECT format examples:")
-        formatted_actions.append('   {"type": "unit_build_city", "unit_id": 101}')
-        formatted_actions.append('   {"type": "unit_move", "unit_id": 102, "dest_x": 15, "dest_y": 20}')
-        formatted_actions.append('   {"type": "tech_research", "tech_name": "alphabet"}')
-        formatted_actions.append('   {"type": "end_turn"}')
+        formatted_actions.append('   [')
+        formatted_actions.append('     {"type": "unit_move", "unit_id": 102, "dest_x": 15, "dest_y": 20, "reasoning": "Moving warrior to defensive position"},')
+        formatted_actions.append('     {"type": "end_turn", "reasoning": "No more high-value actions remain"}')
+        formatted_actions.append('   ]')
+        formatted_actions.append('   {"type": "unit_build_city", "unit_id": 101, "reasoning": "Found excellent city site with resources"}')
+        formatted_actions.append('   {"type": "unit_move", "unit_id": 102, "dest_x": 15, "dest_y": 20, "reasoning": "Scout exploring unknown territory"}')
+        formatted_actions.append('   {"type": "tech_research", "tech_name": "alphabet", "reasoning": "Need writing for libraries"}')
+        formatted_actions.append('   {"type": "end_turn", "reasoning": "Completed all productive actions this turn"}')
+        formatted_actions.append("")
+        formatted_actions.append("Each action MUST include:")
+        formatted_actions.append("  • type: The action type (required)")
+        formatted_actions.append("  • reasoning: Brief explanation of why you chose this action (required)")
+        formatted_actions.append("  • Other fields as needed (unit_id, dest_x, dest_y, tech_name, etc.)")
         formatted_actions.append("")
         formatted_actions.append("❌ WRONG formats:")
+        formatted_actions.append('   {"type": "unit_move", "unit_id": 102}  ← Missing reasoning field')
         formatted_actions.append("   unit_build_city_unit(101)  ← String format not supported")
-        formatted_actions.append("   I will build: {...}  ← Extra text not allowed")
+        formatted_actions.append("   I will build: {...}  ← Extra text outside JSON not allowed")
         formatted_actions.append("")
-        formatted_actions.append("Copy EXACTLY one JSON action from the list below.")
-        formatted_actions.append("Do NOT add reasoning, explanations, markdown, or extra text.")
+        formatted_actions.append("Copy one or more JSON actions from the list below. Add your reasoning for each.")
+        formatted_actions.append("If you return multiple actions, wrap them in a JSON array [ ... ].")
         formatted_actions.append("=" * 80)
         formatted_actions.append("")
 
-        # ALWAYS show end_turn guidance
-        formatted_actions.append("")
-        formatted_actions.append("⚠️ CRITICAL: You MUST call end_turn when you're finished with your actions.")
-        formatted_actions.append("The game only advances when BOTH players call end_turn.")
-        formatted_actions.append("")
-        formatted_actions.append("Call end_turn when:")
-        formatted_actions.append("  • You've taken most of your allowed actions")
-        formatted_actions.append("  • All your units have no movement points remaining")
-        formatted_actions.append("  • No valuable actions remain this turn")
-        formatted_actions.append("")
-
-        # ADD DYNAMIC CONTEXT-AWARE INSTRUCTIONS
+        # ADD DYNAMIC CONTEXT-AWARE INSTRUCTIONS (including conditional end_turn guidance)
         if action_context:
             actions_taken = action_context.get('actions_taken', 0)
             actions_remaining = action_context.get('actions_remaining', 0)
             max_actions = action_context.get('max_actions', 20)
             should_warn = action_context.get('should_consider_end_turn', False)
+            urgency = action_context.get('end_turn_urgency', None)
 
             formatted_actions.append(f"TURN PROGRESS: {actions_taken} actions taken, {actions_remaining} remaining (max: {max_actions})")
 
             if should_warn:
                 formatted_actions.append("")
                 formatted_actions.append("=" * 80)
-                formatted_actions.append("⚠️  WARNING: APPROACHING ACTION LIMIT!")
-                formatted_actions.append("=" * 80)
+                
+                # SOLUTION 2: Escalate urgency based on remaining actions
+                # Note: CRITICAL level removed since we force end_turn at action 18
+                # (before urgency would reach critical ≤1 remaining)
+                if urgency and 'URGENT' in urgency:
+                    formatted_actions.append("⚠️  URGENT: STRONGLY RECOMMEND END_TURN")
+                    formatted_actions.append("=" * 80)
+                    formatted_actions.append("")
+                    formatted_actions.append(f"You have only {actions_remaining} action(s) remaining!")
+                    formatted_actions.append("The system will force end_turn at action 18/20 to ensure turn completion.")
+                    formatted_actions.append("Unless you have a CRITICAL high-impact action, call end_turn now.")
+                    formatted_actions.append("Respond with: {\"type\": \"end_turn\"}")
+                    formatted_actions.append("")
+                else:
+                    formatted_actions.append("🔄 TURN COMPLETION CONSIDERATION")
+                    formatted_actions.append("=" * 80)
+                    formatted_actions.append("")
+                    formatted_actions.append("End the turn when further moves are purely positional or low-impact.")
+                    formatted_actions.append("Criteria met: No high-impact actions remain OR only movement/end_turn actions available.")
+                    formatted_actions.append("If you have no valuable follow-up, respond with: {\"type\": \"end_turn\"}")
                 formatted_actions.append("")
-                formatted_actions.append("You have taken {} actions and have only {} actions remaining.".format(
-                    actions_taken, actions_remaining
-                ))
-                formatted_actions.append("")
-                formatted_actions.append("CRITICAL: Both players must call 'end_turn' for the game to advance.")
-                formatted_actions.append("          If you have no critical actions left, you SHOULD call end_turn now.")
-                formatted_actions.append("")
-                formatted_actions.append("Consider: Is your next action more valuable than ending the turn?")
+                formatted_actions.append("Reminder: The game advances only after BOTH players choose end_turn.")
                 formatted_actions.append("=" * 80)
 
             formatted_actions.append("")  # Blank line

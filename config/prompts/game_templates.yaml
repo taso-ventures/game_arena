@@ -137,42 +137,109 @@ response_formats:
     Provide your analysis in clear sections with headers and numbered points.
 
     ACTION FORMAT REQUIREMENT:
-    You MUST respond with your chosen action in one of these EXACT formats:
+    ⚡ RECOMMENDED: Submit MULTIPLE actions in one response to maximize efficiency and reduce delays.
+    This allows you to plan ahead and execute a sequence of strategic moves in a single turn.
 
-    1. Canonical format (copy from available actions):
-       - Unit movement: unit_move_unit(101)_to(2,3)
-       - City production: city_production_city(5)_target(Warrior)
-       - Tech research: tech_research_player(1)_target(Alphabet)
-       - Unit attack: unit_attack_unit(101)_target(205)
-       - Unit fortify: unit_fortify_unit(101)
+    MULTI-ACTION JSON FORMAT (copy structure, adjust values):
+    [
+      {"type":"unit_build_city","unit_id":102,"reasoning":"Found excellent city site"},
+      {"type":"unit_move","unit_id":109,"dest_x":31,"dest_y":52,"reasoning":"Moving warrior to defensive position"},
+      {"type":"unit_move","unit_id":110,"dest_x":14,"dest_y":30,"reasoning":"Scout exploring unknown territory"},
+      {"type":"end_turn","reasoning":"No more high-value actions remain"}
+    ]
 
-    2. JSON format (alternative):
-       {"action_type": "tech_research", "actor_id": 1, "target": {"value": "Alphabet"}}
+    SINGLE-ACTION JSON FORMAT (if only one action needed):
+    {"type":"unit_move","unit_id":101,"dest_x":2,"dest_y":3,"reasoning":"Repositioning for next turn"}
 
-    End with: FINAL DECISION: [action in EXACT format from above] because [strategic and entertainment reasoning]
+    📋 JSON SCHEMA:
+    {
+      "unit_move": {
+        "type": "unit_move",
+        "unit_id": <integer>,
+        "dest_x": <integer>,
+        "dest_y": <integer>,
+        "reasoning": <string>  // REQUIRED: Brief explanation
+      },
+      "unit_build_city": {
+        "type": "unit_build_city",
+        "unit_id": <integer>,
+        "reasoning": <string>  // REQUIRED: Brief explanation
+      },
+      "city_production": {
+        "type": "city_production",
+        "city_id": <integer>,
+        "production_type": <string>,  // REQUIRED: e.g., "warrior", "granary", "settlers"
+        "reasoning": <string>  // REQUIRED: Brief explanation
+      },
+      "tech_research": {
+        "type": "tech_research",
+        "tech_name": <string>,  // REQUIRED: e.g., "Pottery", "Writing", "Bronze Working"
+        "reasoning": <string>  // REQUIRED: Brief explanation
+      },
+      "end_turn": {
+        "type": "end_turn",
+        "reasoning": <string>  // REQUIRED: Brief explanation
+      }
+    }
 
-    EXAMPLE:
-    FINAL DECISION: tech_research_player(1)_target(Writing) because it unlocks Libraries for science boost and supports our cultural dominance strategy.
+    ⚠️ CRITICAL JSON RULES:
+    1. ONLY use action types that EXACTLY match entries in AVAILABLE ACTIONS
+    2. Do NOT invent action types like "explore_nearby_areas" or "build_first_city"
+    3. EVERY action MUST include a "reasoning" field explaining your choice
+    4. For city_production: MUST include "production_type" field with what to produce
+    5. For tech_research: MUST include "tech_name" field with technology name
+    6. Copy unit_id, city_id, dest_x, dest_y exactly from AVAILABLE ACTIONS
+    7. If using JSON array, ensure proper format: [{"type":"...","reasoning":"..."},{"type":"...","reasoning":"..."}]
+
+    Benefits of multi-action responses:
+    - Faster gameplay (reduces round-trip delays)
+    - Better strategic planning (coordinate multiple units/cities)
+    - More efficient turn execution
+    - You can include {"type":"end_turn","reasoning":"..."} to signal completion
+
+    ⚠️ IMPORTANT: Every action you provide MUST exactly match an entry in AVAILABLE ACTIONS.
+
+    End with: FINAL DECISION: [your actions in JSON format] because [strategic reasoning]
+
+    EXAMPLE (Multi-Action JSON):
+    FINAL DECISION:
+    [
+      {"type":"unit_build_city","unit_id":103,"reasoning":"Excellent city site with resources"},
+      {"type":"unit_build_city","unit_id":104,"reasoning":"Strategic coastal location"},
+      {"type":"unit_move","unit_id":105,"dest_x":53,"dest_y":29,"reasoning":"Worker moving to improve tiles"},
+      {"type":"end_turn","reasoning":"All productive actions completed"}
+    ]
+
+    EXAMPLE (Single-Action JSON):
+    FINAL DECISION:
+    {"type":"tech_research","tech_name":"Pottery","reasoning":"Need writing for libraries and cultural development"}
+    because advancing in technology opens up new strategic opportunities.
+
+    Dynamic note: End-turn guidance will appear in AVAILABLE ACTIONS only when appropriate.
 
   conversational: |
     Share your strategic thinking in a natural, engaging way. Explain your
     reasoning as if discussing strategy with a fellow player.
 
     ACTION FORMAT REQUIREMENT:
-    When stating your action choice, use the EXACT format from the available actions list.
-    Copy the action string exactly as shown (e.g., unit_move_unit(101)_to(2,3)).
+    When stating your action choice, use JSON format with reasoning:
+    {"type":"unit_move","unit_id":101,"dest_x":2,"dest_y":3,"reasoning":"Brief explanation"}
 
     Conclude with your chosen action in the exact format and explain why it's both smart and entertaining.
 
     EXAMPLE:
-    "I'm going with tech_research_player(1)_target(Pottery) because it opens up granaries for population growth!"
+    "I'm choosing {"type":"tech_research","tech_name":"Pottery","reasoning":"Unlocks granaries for faster growth"} to unlock granaries!"
+
+    Dynamic note: End-turn guidance appears only when it's strategically time to end the turn.
 
   concise: |
     Present key analysis points efficiently. Focus on critical factors and
     decisive reasoning.
 
-    ACTION FORMAT: Copy the exact action string from the available actions list.
-    State your action choice using the precise format shown (e.g., city_production_city(5)_target(Warrior)).
+    ACTION FORMAT: 
+    Use JSON with reasoning: {"type":"city_production","city_id":5,"production_type":"Warrior","reasoning":"Need military"}
 
     EXAMPLE:
-    Analysis: Need military. Choice: city_production_city(5)_target(Warrior) - strengthens defense.
+    Analysis: Need military. Choice: {"type":"city_production","city_id":5,"production_type":"Warrior","reasoning":"Strengthens defense"} - critical for security.
+    
+    Dynamic note: End-turn suggestion shown only when no meaningful actions remain.

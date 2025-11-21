@@ -49,6 +49,52 @@ models:
     format: "structured_json"
     description: "DeepSeek with concise, direct reasoning approach"
 
+  # xAI Grok models
+  grok:
+    max_tokens: 4000
+    style: "structured"
+    reasoning: "chain_of_thought"
+    format: "json_with_explanation"
+    description: "xAI Grok models with structured reasoning"
+
+  # Ollama local models (Llama, Mistral, etc.)
+  llama:
+    max_tokens: 3500
+    style: "structured"
+    reasoning: "step_by_step"
+    format: "json_with_explanation"
+    description: "Llama models via Ollama for local inference"
+
+  ollama:
+    max_tokens: 3500
+    style: "structured"
+    reasoning: "step_by_step"
+    format: "json_with_explanation"
+    description: "Generic Ollama model configuration for local inference"
+
+  # HuggingFace models
+  huggingface:
+    max_tokens: 3000
+    style: "structured"
+    reasoning: "step_by_step"
+    format: "json_with_explanation"
+    description: "HuggingFace models via Inference API"
+
+  # Moonshot AI models
+  kimi:
+    max_tokens: 3500
+    style: "structured"
+    reasoning: "chain_of_thought"
+    format: "json_with_explanation"
+    description: "Moonshot AI Kimi K2 model (via Together.AI)"
+
+  moonshot:
+    max_tokens: 8000
+    style: "structured"
+    reasoning: "extended_thinking"
+    format: "json_with_explanation"
+    description: "Moonshot AI Kimi K2 Thinking model with extended reasoning capabilities"
+
 # Style definitions for prompt formatting
 styles:
   structured:
@@ -85,6 +131,13 @@ reasoning_approaches:
     step_by_step: false
     show_reasoning: false
     explicit_conclusions: true
+
+  extended_thinking:
+    step_by_step: true
+    show_reasoning: true
+    explicit_conclusions: true
+    deep_analysis: true
+    reasoning_budget: "high"
 
 # Output format specifications
 output_formats:

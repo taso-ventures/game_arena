@@ -23,10 +23,13 @@ Example usage:
 """
 
 import asyncio
+import json
 import logging
+import math
 import random
+import re
 import time
-from typing import Any, Dict, List, Mapping, Optional, TypedDict
+from typing import Any, Dict, List, Mapping, Optional, TypedDict, cast
 
 from absl import logging as absl_logging
 
@@ -39,7 +42,7 @@ from game_arena.harness.freeciv_proxy_client import FreeCivProxyClient
 from game_arena.harness.freeciv_state import FreeCivAction, FreeCivState
 from game_arena.harness.freeciv_state_sync import FreeCivStateSynchronizer
 from game_arena.harness.freeciv_strategy import StrategyManager
-from game_arena.harness.prompts.freeciv_prompts import FreeCivPromptBuilder
+from game_arena.harness.prompts.freeciv_prompts import FreeCivPromptBuilder, ObservationData
 
 logger = logging.getLogger(__name__)
 
@@ -125,20 +128,8 @@ class FreeCivLLMAgent(
     self.memory = GameMemory(max_size=memory_size)
     self.strategy_manager = StrategyManager()
 
-    # Initialize rethinking sampler if enabled
-    if use_rethinking:
-      self.sampler = rethink.RethinkSampler(
-          model=model,
-          strategy=tournament_util.SamplerChoice.RETHINK_WITH_ENV,
-          num_max_rethinks=max_rethinks,
-          move_parser=self.action_parser,
-          legality_parser=self.action_parser,
-          game_short_name="freeciv",
-          prompt_generator=FreeCivPromptGeneratorAdapter(),
-          rethink_template=None,
-      )
-    else:
-      self.sampler = None
+    # Disable rethinking by default for FreeCiv until sampler implements required Protocol methods.
+    self.sampler = None
 
     # Initialize random number generator
     self._rng = random.Random(seed)
@@ -146,6 +137,11 @@ class FreeCivLLMAgent(
     # Performance tracking
     self._num_model_calls = 0
     self._total_response_time = 0.0
+    # Token usage (approximate). Using heuristic: ~4 chars per token for English.
+    self._total_prompt_tokens = 0
+    self._total_response_tokens = 0
+    self._last_prompt_tokens = 0
+    self._last_response_tokens = 0
 
     # Error telemetry (PR feedback fix: capture error context for debugging)
     self._error_telemetry: Optional[Dict[str, Any]] = None
@@ -157,16 +153,33 @@ class FreeCivLLMAgent(
     self.actions_this_turn: List[FreeCivAction] = []
     self.queries_without_action = 0
     self.last_turn_units_exhausted = False
+    self._consecutive_move_fallbacks = 0
+    # Cache for player id (set after first successful extraction)
+    self._cached_player_id: Optional[int] = None
+
+    # Store last LLM response text & last selected action string for richer Kaggle extras
+    self._last_response_text: Optional[str] = None
+    self._last_selected_action_string: Optional[str] = None
+    # Buffer for multi-action responses: agent can return multiple planned actions
+    # in one LLM response; we store the remaining actions here and consume them
+    # on subsequent get_action_async() calls to avoid extra LLM requests.
+    self._planned_actions: List[FreeCivAction] = []
+    # Instrumentation counters for end_turn planning/execution per turn
+    self._planned_end_turn_count = 0
+    self._executed_end_turn_count = 0
 
     absl_logging.info(
         "FreeCivLLMAgent initialized: model=%s, strategy=%s, rethinking=%s",
-        model.model_name,
-        strategy,
+        self.model.model_name,
+        self.strategy,
         use_rethinking,
     )
 
   def __call__(
-      self, observation: Mapping[str, Any], info: Mapping[str, Any]
+      self,
+      observation: Mapping[str, Any],
+      configuration: Mapping[str, Any],
+      **kwargs: Any,
   ) -> agent.KaggleSpielActionWithExtras:
     """Execute agent action selection following KaggleSpielAgent protocol.
 
@@ -185,10 +198,20 @@ class FreeCivLLMAgent(
       Exception: If action generation fails and fallback is disabled
     """
     start_time = time.time()
+    del configuration, kwargs  # Unused in FreeCiv agent
 
     try:
       # Run async action generation
       action_int = asyncio.run(self._get_action_async(observation))
+
+      # Build KaggleSpielActionWithExtras response (conforms to protocol expectations)
+      action_string = self._last_selected_action_string
+      thoughts = self._last_response_text
+      status = (
+          f"ok model_calls={self._num_model_calls} "
+          f"prompt_tokens≈{self._last_prompt_tokens} "
+          f"response_tokens≈{self._last_response_tokens}"
+      )
 
       # Track performance
       execution_time = time.time() - start_time
@@ -201,7 +224,13 @@ class FreeCivLLMAgent(
           self._num_model_calls,
       )
 
-      return {"submission": action_int}
+      return agent.KaggleSpielActionWithExtras(
+          submission=action_int,
+          actionString=action_string,
+          thoughts=thoughts,
+          status=status,
+          generate_returns=[thoughts] if thoughts else [],
+      )
 
     except Exception as e:
       execution_time = time.time() - start_time
@@ -253,7 +282,14 @@ class FreeCivLLMAgent(
           # Add to error history for trend analysis
           self._error_history.append(self._error_telemetry.copy())
 
-          return {"submission": fallback_action}
+          # Return KaggleSpielActionWithExtras for protocol compliance
+          return agent.KaggleSpielActionWithExtras(
+              submission=fallback_action,
+              actionString=None,
+              thoughts=None,
+              status="fallback:random_from_legal_actions",
+              generate_returns=[],
+          )
         else:
           # No legal actions available - record and re-raise
           self._error_telemetry["fallback_action"] = {
@@ -388,6 +424,8 @@ class FreeCivLLMAgent(
               f"Player ID must be non-negative, got {player_id} for key '{key}'"
           )
 
+        # Cache for future fallback use
+        self._cached_player_id = player_id
         return player_id
 
     # Try to extract from state information
@@ -409,10 +447,11 @@ class FreeCivLLMAgent(
                   f"Player ID in state.{key} must be non-negative, got {player_id}"
               )
 
+            self._cached_player_id = player_id
             return player_id
 
     # Check if stored from previous calls
-    if hasattr(self, '_cached_player_id'):
+    if hasattr(self, '_cached_player_id') and self._cached_player_id is not None:
       absl_logging.warning(
           "Using cached player ID %d (could not extract from observation)",
           self._cached_player_id
@@ -437,97 +476,131 @@ class FreeCivLLMAgent(
       legal_actions: List[FreeCivAction],
       action_context: Optional[Dict[str, Any]] = None
   ) -> FreeCivAction:
-    """Generate action using LLM with context and strategy.
+    """Generate action using LLM with context, plus token usage logging."""
+    # Extract player ID early for consistency
+    _ = self._extract_player_id(observation)
 
-    Args:
-      observation: Game observation
-      state: Current FreeCiv game state
-      legal_actions: List of legal FreeCiv actions
-      action_context: Optional context about turn actions. See get_action_async()
-          for structure details. When provided, this context is forwarded to
-          the prompt builder to generate dynamic warnings for agents.
-
-    Returns:
-      Selected FreeCivAction
-    """
-    # Extract player_id at function start to ensure consistency across all operations
-    # This prevents player context loss during rethinking and state operations
-    player_id = self._extract_player_id(observation)
-
-    # Log available legal actions for debugging
     absl_logging.debug(
         "Generating action with %d legal options. Examples: %s",
         len(legal_actions),
         [self.action_converter.action_to_string(a) for a in legal_actions[:3]]
     )
 
-    # Build context-aware prompt with action context
-    # TODO(AGE-196): Integrate FreeCiv3D strategic guidance into action selection
-    # When state._raw_state contains these fields (from llm_optimized format):
-    # 1. immediate_priorities: Prioritize actions matching these suggestions
-    # 2. threats: Increase defensive action scores when threats detected
-    # 3. opportunities: Boost exploration/expansion actions for identified opportunities
-    # See Linear issue: https://linear.app/agentclash/issue/AGE-196
-    # Example:
-    #   if 'immediate_priorities' in state._raw_state:
-    #       priorities = state._raw_state['immediate_priorities']
-    #       # Adjust action scoring based on priorities
-    prompt = self._build_context_aware_prompt(
+    # Build prompt (ModelTextInput wrapper)
+    prompt_input = self._build_context_aware_prompt(
         observation, state, legal_actions, action_context=action_context
     )
+    prompt_text = prompt_input.prompt_text
 
-    # Generate response using model (run in thread pool to avoid blocking event loop)
+    # Token estimation helper (lightweight heuristic)
+    def _approx_tokens(text: str) -> int:
+      if not text:
+        return 0
+      return max(1, math.ceil(len(text) / 4))  # ~4 chars/token heuristic
+
+    self._last_prompt_tokens = _approx_tokens(prompt_text)
+    self._total_prompt_tokens += self._last_prompt_tokens
+
+    # Generate model response
     self._num_model_calls += 1
-    response = await asyncio.to_thread(
-        self.model.generate_with_text_input, prompt
-    )
-
-    # DIAGNOSTIC: Log LLM response for debugging parser issues
+    call_start = time.time()
     absl_logging.info(
-        "🤖 LLM response (first 300 chars): %s",
-        response.main_response[:300]
+        "LLM CALL START model=%s turn=%s prompt_tokens≈%d calls=%d",
+        getattr(self.model, 'model_name', '<unknown>'),
+        getattr(state, 'turn', None),
+        self._last_prompt_tokens,
+        self._num_model_calls,
     )
-    if len(response.main_response) > 300:
-        absl_logging.debug(
-            "Full LLM response (%d chars): %s",
-            len(response.main_response),
-            response.main_response
-        )
-
-    # Parse response to FreeCivAction
-    selected_action = self._parse_llm_response(
-        response.main_response, legal_actions
-    )
-
-    # Validate action is legal with detailed logging
-    if selected_action not in legal_actions:
-      # Log what went wrong for debugging
+    try:
+      response = await asyncio.to_thread(
+          self.model.generate_with_text_input, prompt_input
+      )
+    except Exception as e:  # Ensure exceptions are logged with stack
+      absl_logging.error(
+          "LLM CALL ERROR model=%s error=%s",
+          getattr(self.model, 'model_name', '<unknown>'),
+          str(e),
+          exc_info=True,
+      )
+      raise
+    finally:
+      duration = time.time() - call_start
       absl_logging.info(
-          "LLM generated illegal action: %s (type=%s, actor=%s, target=%s)",
-          self.action_converter.action_to_string(selected_action),
-          selected_action.action_type,
-          selected_action.actor_id,
-          selected_action.target
+          "LLM CALL END model=%s duration=%.2fs calls=%d",
+          getattr(self.model, 'model_name', '<unknown>'),
+          duration,
+          self._num_model_calls,
       )
-      absl_logging.debug(
-          "Legal actions available (%d): %s",
-          len(legal_actions),
-          [self.action_converter.action_to_string(a) for a in legal_actions[:5]]
-      )
-      absl_logging.debug("LLM response (first 500 chars): %s", response.main_response[:500])
 
-      # Use rethinking sampler if available
-      # Rethinking not supported for FreeCiv dict-based observations
-      # RethinkSampler is designed for OpenSpiel pyspiel.State objects
-      # TODO(AGE-XXX): Implement proper rethinking by calling LLM with error feedback
+    self._last_response_tokens = _approx_tokens(getattr(response, "main_response", ""))
+    self._total_response_tokens += self._last_response_tokens
+    absl_logging.info(
+        "🧮 Token estimate: prompt≈%d, response≈%d (totals: prompt≈%d, response≈%d)",
+        self._last_prompt_tokens,
+        self._last_response_tokens,
+        self._total_prompt_tokens,
+        self._total_response_tokens,
+    )
+
+    # Log full response for diagnostics
+    model_name = getattr(self.model, 'model_name', '<unknown>')
+    absl_logging.info("🤖 LLM response (%d chars) from model %s:\n%s", len(response.main_response), model_name, response.main_response)
+
+    # Parse response (may return single FreeCivAction or a list of them)
+    parsed = self._parse_llm_response(response.main_response, legal_actions)
+
+    # If model returned multiple planned actions, buffer remaining legal ones
+    if isinstance(parsed, list):
+      if not parsed:
+        raise ValueError("Model returned empty action list")
+      legal_planned: List[FreeCivAction] = [a for a in parsed if self._is_action_legal(a, legal_actions)]
+      discarded = len(parsed) - len(legal_planned)
+      if not legal_planned:
+        absl_logging.warning(
+            "All planned actions were illegal (%d discarded); using strategic fallback",
+            discarded
+        )
+        selected_action = self._choose_strategic_fallback(legal_actions)
+      else:
+        selected_action = legal_planned[0]
+        self._planned_actions = legal_planned[1:]
+        # Count planned end_turn actions for instrumentation
+        self._planned_end_turn_count += sum(
+            1 for a in legal_planned if getattr(a, 'action_type', None) == 'end_turn'
+        )
+        absl_logging.info(
+            "Parsed %d planned legal actions; executing first and buffering %d (discarded=%d)",
+            1 + len(self._planned_actions),
+            len(self._planned_actions),
+            discarded,
+        )
+    else:
+      selected_action = parsed
+
+    # Persist response text & action string for __call__ extras
+    try:
+      from game_arena.harness.freeciv_action_converter import FreeCivActionConverter
+      self._last_response_text = response.main_response
+      converter = FreeCivActionConverter()
+      self._last_selected_action_string = converter.action_to_string(selected_action)
+    except Exception:  # pylint: disable=broad-except
+      # Non-fatal; keep going even if conversion fails
+      self._last_response_text = response.main_response
+      self._last_selected_action_string = None
+
+    if not self._is_action_legal(selected_action, legal_actions):
       absl_logging.warning(
-          f"LLM generated illegal action: {selected_action} "
-          f"(type={selected_action.action_type}, actor={selected_action.actor_id}), "
-          f"falling back to first legal action"
+          "LLM produced illegal action '%s', falling back to first legal action",
+          self.action_converter.action_to_string(selected_action)
       )
-      selected_action = legal_actions[0] if legal_actions else None
-      if selected_action:
-        absl_logging.info(f"Using fallback action: {selected_action}")
+      if legal_actions:
+        selected_action = legal_actions[0]
+      else:
+        raise ValueError("No legal actions available for fallback")
+
+    # Instrument execution if end_turn chosen here
+    if getattr(selected_action, 'action_type', None) == 'end_turn':
+      self._executed_end_turn_count += 1
 
     return selected_action
 
@@ -568,9 +641,35 @@ class FreeCivLLMAgent(
 
       # Generate response with rethinking context
       try:
+        rethink_start = time.time()
+        absl_logging.debug(
+            "LLM RETHINK START model=%s attempt=%d",
+            getattr(self.model, 'model_name', '<unknown>'),
+            attempt + 1,
+        )
+        # Also emit at INFO so runtime logs include rethinking start/end
+        absl_logging.info(
+            "LLM RETHINK START model=%s attempt=%d",
+            getattr(self.model, 'model_name', '<unknown>'),
+            attempt + 1,
+        )
         response = await asyncio.to_thread(
             self.model.generate_with_text_input,
-            rethink_prompt
+            rethink_prompt,
+        )
+        rethink_duration = time.time() - rethink_start
+        absl_logging.debug(
+            "LLM RETHINK END model=%s attempt=%d duration=%.2fs",
+            getattr(self.model, 'model_name', '<unknown>'),
+            attempt + 1,
+            rethink_duration,
+        )
+        # Also emit at INFO so runtime logs include rethinking start/end
+        absl_logging.info(
+            "LLM RETHINK END model=%s attempt=%d duration=%.2fs",
+            getattr(self.model, 'model_name', '<unknown>'),
+            attempt + 1,
+            rethink_duration,
         )
 
         # Log response
@@ -579,10 +678,29 @@ class FreeCivLLMAgent(
             f"{response.main_response[:300]}"
         )
 
-        # Parse action from response
-        selected_action = self._parse_llm_response(
+        # Parse action(s) from response (may be a list)
+        parsed = self._parse_llm_response(
             response.main_response, legal_actions
         )
+        if isinstance(parsed, list):
+          if not parsed:
+            absl_logging.warning("Rethink returned empty action list")
+            continue
+          valid_actions = [a for a in parsed if a in legal_actions]
+          if not valid_actions:
+            absl_logging.warning("Rethink produced only illegal actions; skipping this attempt")
+            continue
+          selected_action = valid_actions[0]
+          # Buffer remaining valid actions in front of existing buffer
+          self._planned_actions = valid_actions[1:] + self._planned_actions
+          absl_logging.info(
+              "Rethink produced %d valid actions; executing first and buffering %d (discarded=%d)",
+              1 + len(valid_actions[1:]),
+              len(valid_actions[1:]),
+              len(parsed) - len(valid_actions),
+          )
+        else:
+          selected_action = parsed
 
         # Validate against legal actions
         if selected_action in legal_actions:
@@ -607,12 +725,19 @@ class FreeCivLLMAgent(
         )
 
       except Exception as e:
-        absl_logging.error(f"Rethinking attempt {attempt + 1} failed: {e}")
+        absl_logging.error(
+            "Rethinking attempt %d raised exception: %s",
+            attempt + 1,
+            str(e),
+            exc_info=True,
+        )
         previous_failures.append({
             "error": str(e),
             "reason": "Exception during rethinking",
-            "attempt": len(previous_failures) + attempt + 1
+            "attempt": len(previous_failures) + attempt + 1,
         })
+        # Try next attempt
+        continue
 
     # All rethinking attempts failed - return None
     absl_logging.warning(
@@ -669,22 +794,27 @@ class FreeCivLLMAgent(
     failure_context += "3. Makes strategic sense for the current situation\n"
     failure_context += "4. Uses a different unit/city if previous attempts failed\n"
 
+    # base_prompt may be a ModelTextInput; extract text for manipulation
+    base_prompt_text = base_prompt.prompt_text if hasattr(base_prompt, 'prompt_text') else str(base_prompt)
+
     # Insert failure context before response format section
-    if "RESPONSE FORMAT" in base_prompt:
-      return base_prompt.replace(
+    if "RESPONSE FORMAT" in base_prompt_text:
+      enhanced_text = base_prompt_text.replace(
           "\nRESPONSE FORMAT",
           failure_context + "\n\nRESPONSE FORMAT"
       )
     else:
       # Fallback: append at end
-      return base_prompt + "\n" + failure_context
+      enhanced_text = base_prompt_text + "\n" + failure_context
+
+    return enhanced_text
 
   def _build_context_aware_prompt(
-      self,
-      observation: Mapping[str, Any],
-      state: FreeCivState,
-      legal_actions: List[FreeCivAction],
-      action_context: Optional[Dict[str, Any]] = None
+    self,
+    observation: Mapping[str, Any],
+    state: FreeCivState,
+    legal_actions: List[FreeCivAction],
+    action_context: Optional[Dict[str, Any]] = None,
   ) -> tournament_util.ModelTextInput:
     """Build context-aware prompt for LLM.
 
@@ -700,40 +830,184 @@ class FreeCivLLMAgent(
     """
     # Get memory context
     memory_context = self.memory.get_context(max_tokens=1000)
-
     # Get strategy configuration
     strategy_config = self.strategy_manager.get_strategy_config(self.strategy)
-
     # Build enhanced prompt with action context
     prompt_text = self.prompt_builder.build_enhanced_prompt(
-        observation=observation,
+        observation=cast(ObservationData, observation),
         legal_actions=legal_actions,
         model_name=self.model.model_name,
         strategy_context=strategy_config,
         memory_context=memory_context,
         action_context=action_context,
     )
-
     return tournament_util.ModelTextInput(prompt_text=prompt_text)
 
-  def _parse_llm_response(
-      self, response_text: str, legal_actions: List[FreeCivAction]
+  def get_token_usage(self) -> Dict[str, int]:
+    """Return approximate token usage statistics."""
+    return {
+        'prompt_last': self._last_prompt_tokens,
+        'response_last': self._last_response_tokens,
+        'prompt_total': self._total_prompt_tokens,
+        'response_total': self._total_response_tokens,
+    }
+
+  def _is_action_legal(
+      self, action: FreeCivAction, legal_actions: List[FreeCivAction]
+  ) -> bool:
+    """Check if action is legal using semantic equality.
+
+    Args:
+      action: Action to check
+      legal_actions: List of legal actions
+
+    Returns:
+      True if action matches any legal action semantically
+    """
+    for legal_action in legal_actions:
+      if self.action_converter._actions_equal(action, legal_action):
+        return True
+    return False
+
+  def _normalize_player_action_id(
+      self, action: FreeCivAction, legal_actions: List[FreeCivAction]
   ) -> FreeCivAction:
+    """Normalize actor_id for player-level actions.
+
+    Player-level actions (end_turn, tech_research) may have actor_id=0
+    from JSON parsing but need the actual player_id from legal actions.
+
+    Args:
+      action: Action to normalize
+      legal_actions: List of legal actions to extract player_id from
+
+    Returns:
+      Action with corrected actor_id
+    """
+    if action.action_type in ["end_turn", "tech_research", "pass", "skip"]:
+      # Find a matching legal action to get the correct player_id
+      for legal in legal_actions:
+        if legal.action_type == action.action_type:
+          # Update actor_id to match legal action
+          return FreeCivAction(
+              action_type=action.action_type,
+              actor_id=legal.actor_id,
+              target=action.target,
+              parameters=action.parameters,
+              source=action.source,
+              confidence=action.confidence,
+              parse_method=action.parse_method,
+              strategic_score=getattr(action, 'strategic_score', 1.0),
+          )
+    return action
+
+  def _parse_llm_response(
+    self, response_text: str, legal_actions: List[FreeCivAction]
+  ):
     """Parse LLM response to FreeCivAction.
 
     Args:
-      response_text: Raw LLM response text (expected to be JSON)
+      response_text: Raw LLM response text
       legal_actions: List of legal actions for validation
 
     Returns:
-      Parsed FreeCivAction
+      Parsed FreeCivAction or List[FreeCivAction]
     """
-    # Try to parse JSON directly from the response
+    # JSON parsing ONLY - models should always respond with JSON
+    # Support multiple forms:
+    # 1) JSON array: [{"type":"unit_move","reasoning":"...",...}, {"type":"end_turn","reasoning":"..."}]
+    # 2) Multiple JSON objects: {"type":"unit_move","reasoning":"...",...} and {"type":"end_turn","reasoning":"..."}
+    # 3) Single JSON object: {"type":"unit_move","reasoning":"...",...}
     try:
-      action = self.action_converter.string_to_action(response_text)
-      absl_logging.debug("✅ Successfully parsed JSON action: %s", response_text[:200])
-      return action
-    except ValueError as e:
+      # Extract JSON array/object if present
+      text = response_text.strip()
+      
+      # Try to extract JSON from various formats
+      # 1. Code fences with json marker
+      if '```json' in text:
+        m = re.search(r'```json\s*(\[[\s\S]*?\]|\{[\s\S]*?\})\s*```', text)
+        if m:
+          text = m.group(1)
+      # 2. Generic code fences
+      elif '```' in text:
+        m = re.search(r'```\s*(\[[\s\S]*?\]|\{[\s\S]*?\})\s*```', text)
+        if m:
+          text = m.group(1)
+      # 3. Naked JSON - try array first, then fall back to object(s)
+      else:
+        # Try to find a JSON array first
+        m = re.search(r'\[[\s\S]*?\]', text)
+        if m:
+          text = m.group(0)
+        else:
+          # Try to find multiple JSON objects separated by text (e.g., "and", commas)
+          # This handles cases like: {"type":"a"} and {"type":"b"}
+          json_objects = re.findall(r'\{[^{}]*\}', text)
+          if len(json_objects) > 1:
+            # Reconstruct as a JSON array
+            text = '[' + ','.join(json_objects) + ']'
+          elif json_objects:
+            # Single object
+            text = json_objects[0]
+
+      # Clean up trailing commas before closing brackets (invalid JSON)
+      text = re.sub(r',(\s*[}\]])', r'\1', text)
+
+      absl_logging.debug(f"🔍 Attempting JSON parse: text_length={len(text)}, starts_with={text[:50] if text else 'empty'}")
+      parsed = json.loads(text)
+      absl_logging.debug(f"✅ JSON parsed successfully: type={type(parsed).__name__}, is_list={isinstance(parsed, list)}")
+
+      # If it's a list, parse each element into FreeCivAction, skipping invalids
+      if isinstance(parsed, list):
+        absl_logging.info(f"📋 Processing JSON array with {len(parsed)} items")
+        actions: List[FreeCivAction] = []
+        skipped = 0
+        for idx, item in enumerate(parsed):
+          if not isinstance(item, dict):
+            skipped += 1
+            absl_logging.debug(f"  Item {idx}: skipped (not a dict)")
+            continue
+          try:
+            act = self.action_converter._json_to_action(item)
+            absl_logging.debug(f"  Item {idx}: converted to {act.action_type}(actor={act.actor_id})")
+            # Normalize player-level action IDs
+            act = self._normalize_player_action_id(act, legal_actions)
+            # Only keep actions that are legal now; discard others
+            if self._is_action_legal(act, legal_actions):
+              actions.append(act)
+              absl_logging.debug(f"  Item {idx}: ✓ legal, added to list")
+            else:
+              skipped += 1
+              absl_logging.debug(f"  Item {idx}: ✗ not legal, skipped")
+          except Exception as ex:  # pylint: disable=broad-except
+            skipped += 1
+            absl_logging.debug(f"  Item {idx}: parse failed - {str(ex)[:120]}")
+        if actions:
+          absl_logging.info(
+              "✅ Parsed multi-action JSON: valid=%d skipped=%d", len(actions), skipped
+          )
+          # Always return as list if we got multiple actions from JSON array
+          return actions
+        else:
+          absl_logging.warning(
+              "⚠️  Multi-action JSON contained no valid legal actions (skipped=%d) – falling back", skipped
+          )
+
+      # Otherwise treat as single action object
+      if isinstance(parsed, dict):
+        try:
+          action = self.action_converter._json_to_action(parsed)
+          # Normalize player-level action IDs
+          action = self._normalize_player_action_id(action, legal_actions)
+          if self._is_action_legal(action, legal_actions):
+            absl_logging.debug("✅ Successfully parsed JSON action: %s", str(parsed)[:200])
+            return action
+          else:
+            absl_logging.debug("Parsed JSON action not in legal set; continuing to fallback: %s", str(parsed)[:150])
+        except Exception as ex:  # pylint: disable=broad-except
+          absl_logging.debug("Single JSON object parse failed: %s", str(ex)[:120])
+
+    except Exception as e:
       # JSON parsing failed - use fallback
       absl_logging.warning(
           "⚠️  JSON parsing failed: %s. Using strategy-aware fallback (strategy=%s)",
@@ -746,17 +1020,15 @@ class FreeCivLLMAgent(
       )
       absl_logging.debug("Full LLM response: %s", response_text[:500])
 
-      # Choose fallback action based on agent strategy
-      selected_fallback = self._choose_strategic_fallback(legal_actions)
-
-      absl_logging.info(
-          "📋 Fallback selected: %s (type=%s) based on %s strategy",
-          selected_fallback.action_type,
-          selected_fallback.action_type,
-          self.strategy
-      )
-
-      return selected_fallback
+    # All parsing failed - use strategic fallback
+    selected_fallback = self._choose_strategic_fallback(legal_actions)
+    absl_logging.info(
+        "📋 Fallback selected: %s (type=%s) based on %s strategy",
+        selected_fallback.action_type,
+        selected_fallback.action_type,
+        self.strategy
+    )
+    return selected_fallback
 
   def _is_valid_canonical_format(self, action_string: str) -> bool:
     """Validate that action string follows canonical format.
@@ -767,7 +1039,6 @@ class FreeCivLLMAgent(
     Returns:
       True if valid canonical format, False otherwise
     """
-    import re
 
     # Basic structure check: word_word(number) with optional _target(...) or _to(...)
     canonical_pattern = r'^[a-z_]+(?:_[a-z]+)?\([^)]+\)(?:_(?:to|target)\([^)]+\))?$'
@@ -837,16 +1108,35 @@ class FreeCivLLMAgent(
         self.strategy, strategy_priorities["balanced"]
     )
 
-    # Find first action matching priority order
+    # Prefer NOT to choose end_turn if any higher-impact actions are available
+    # Collect candidates by priority list excluding end_turn initially
+    end_turn_actions = [a for a in legal_actions if a.action_type == 'end_turn']
+    # Identify high-impact actions
+    high_impact_types = {'unit_attack', 'city_production', 'tech_research'}
+    non_move_actions = [a for a in legal_actions if 'move' not in a.action_type]
     for action_type in priority_list:
       for action in legal_actions:
-        if action.action_type == action_type:
+        if action.action_type == action_type and action.action_type != 'end_turn':
           absl_logging.debug(
-              "Strategy fallback: found %s action (priority %d)",
+              "Strategy fallback: picked %s action (priority %d)",
               action_type,
               priority_list.index(action_type) + 1
           )
+          # Track consecutive move fallbacks to avoid repetition
+          if action.action_type == 'unit_move':
+            self._consecutive_move_fallbacks += 1
+            # If we've picked move fallback multiple times and other non-move options exist, switch
+            if self._consecutive_move_fallbacks >= 2 and non_move_actions:
+              absl_logging.info("Fallback penalty: avoiding repeated unit_move; selecting non-move alternative")
+              return non_move_actions[0]
+          else:
+            self._consecutive_move_fallbacks = 0
           return action
+
+    # If only end_turn or no prioritized non-end_turn actions remain, fall back to end_turn if present
+    if end_turn_actions:
+      absl_logging.debug("Strategy fallback: only end_turn available, selecting end_turn")
+      return end_turn_actions[0]
 
     # Ultimate fallback: return first legal action
     absl_logging.warning(
@@ -952,6 +1242,31 @@ class FreeCivLLMAgent(
     self.on_state_update(observation)
     self.queries_without_action += 1
 
+    # If we have a buffer of planned actions from a previous multi-action
+    # LLM response, consume and return the next planned action immediately
+    if self._planned_actions:
+      # Validate buffered actions against current legal actions before use
+      current_legal = state.get_legal_actions(player_id)
+      while self._planned_actions:
+        candidate = self._planned_actions.pop(0)
+        if candidate in current_legal:
+            absl_logging.info(
+                "Using preplanned action from buffer: %s (remaining=%d)",
+                getattr(candidate, 'action_type', '<unknown>'),
+                len(self._planned_actions)
+            )
+            self.on_action_taken(candidate)
+            self._record_action_in_memory(candidate, observation, state)
+            return candidate
+        else:
+            try:
+              absl_logging.debug(
+                  "Discarding buffered illegal/stale action: %s", self.action_converter.action_to_string(candidate)
+              )
+            except Exception:
+              absl_logging.debug("Discarding buffered illegal/stale action (string conversion failed)")
+      # Fall through to normal generation if no valid buffered actions remain
+
     # NEW: Check heuristic end_turn condition BEFORE calling LLM
     # This provides fallback logic when units are exhausted, action limit approached,
     # or agent is stuck without making progress
@@ -1003,9 +1318,71 @@ class FreeCivLLMAgent(
         )
         raise ValueError(f"No legal actions for player {player_id}")
 
-    # Generate action with context (LLM-based decision)
+    # If caller did not provide action_context, build a real one from agent state and legal actions
+    if action_context is None:
+      max_actions = 20  # TODO: externalize if server exposes limit
+      actions_taken = len(self.actions_this_turn)
+      actions_remaining = max_actions - actions_taken
+
+      action_types = [a.action_type.lower() for a in legal_actions]
+      end_turn_available = any(t == 'end_turn' for t in action_types)
+      high_impact_present = any(
+        any(keyword in t for keyword in ['attack', 'build', 'production', 'research'])
+        for t in action_types
+      )
+      low_actions_only = all(('move' in t or t == 'end_turn') for t in action_types) if action_types else False
+      only_end_turn = len(action_types) == 1 and action_types[0] == 'end_turn'
+
+      # Unit exhaustion heuristic
+      my_units = [u for u in state.units.values() if u.owner == player_id]
+      all_units_exhausted = False
+      if my_units and all(hasattr(u, 'moves_left') and u.moves_left == 0 for u in my_units):
+        all_units_exhausted = True
+
+      should_consider_end_turn = end_turn_available and (
+        only_end_turn or all_units_exhausted or low_actions_only or (not high_impact_present and actions_taken >= 1)
+      )
+
+      action_context = {
+        'actions_taken': actions_taken,
+        'actions_remaining': actions_remaining,
+        'max_actions': max_actions,
+        'should_consider_end_turn': should_consider_end_turn,
+        'units_exhausted': all_units_exhausted,
+        'end_turn_available': end_turn_available,
+      }
+
+    # Secondary heuristic: if only low-impact actions remain (mostly moves) and we've
+    # already taken many actions this turn, proactively end turn to avoid stalls.
+    try:
+      if (
+          action_context.get('should_consider_end_turn', False)
+          and action_context.get('actions_taken', 0) >= 8
+      ):
+        absl_logging.info(
+            "⏭️ Heuristic (post-legal): ending turn after %d actions (low-impact only)",
+            action_context.get('actions_taken', 0)
+        )
+        end_turn_action = FreeCivAction(
+            action_type="end_turn",
+            actor_id=player_id,
+            target=None,
+            parameters={"turn": state.turn},
+            source="player",
+            confidence=1.0,
+            parse_method="heuristic",
+            strategic_score=1.0,
+        )
+        self.on_action_taken(end_turn_action)
+        self._record_action_in_memory(end_turn_action, observation, state)
+        return end_turn_action
+    except Exception:
+      # Non-fatal; proceed with normal generation if context missing
+      pass
+
+    # Generate action with enriched context (LLM-based decision)
     selected_action = await self._generate_action_with_llm(
-        observation, state, legal_actions, action_context=action_context
+      observation, state, legal_actions, action_context=action_context
     )
 
     # NEW: Record action in turn history
@@ -1033,6 +1410,10 @@ class FreeCivLLMAgent(
         "strategy": self.strategy,
         "memory_size": len(self.memory.history),
         "cache_stats": self.memory.get_cache_statistics(),
+        "prompt_tokens_total": getattr(self, "_total_prompt_tokens", 0),
+        "response_tokens_total": getattr(self, "_total_response_tokens", 0),
+        "prompt_tokens_last": getattr(self, "_last_prompt_tokens", 0),
+        "response_tokens_last": getattr(self, "_last_response_tokens", 0),
     }
 
   def get_error_telemetry(self) -> Optional[Dict[str, Any]]:
@@ -1106,10 +1487,18 @@ class FreeCivLLMAgent(
           len(self.actions_this_turn),
           self.queries_without_action
       )
+      # Log end_turn instrumentation before reset
+      absl_logging.info(
+          "Turn instrumentation: planned_end_turn=%d executed_end_turn=%d",
+          self._planned_end_turn_count,
+          self._executed_end_turn_count
+      )
       self.current_turn = new_turn
       self.actions_this_turn = []
       self.queries_without_action = 0
       self.last_turn_units_exhausted = False
+      self._planned_end_turn_count = 0
+      self._executed_end_turn_count = 0
 
   def on_action_taken(self, action: FreeCivAction) -> None:
     """Record action in turn history.
