@@ -30,6 +30,26 @@ from game_arena.harness import model_generation
 import requests
 
 
+def _sanitize_request_for_logging(request: Mapping[str, Any]) -> dict[str, Any]:
+  """Sanitize request object by removing sensitive information for safe logging.
+
+  Args:
+    request: The request object to sanitize
+
+  Returns:
+    Sanitized request with sensitive data redacted
+  """
+  sanitized = dict(request)
+  # Remove or redact sensitive headers if present
+  if "headers" in sanitized:
+    headers = dict(sanitized["headers"])
+    for header_name in headers:
+      if header_name.lower() in ["authorization", "x-api-key", "api-key"]:
+        headers[header_name] = "***REDACTED***"
+    sanitized["headers"] = headers
+  return sanitized
+
+
 def _create_image_text_content(
     model_input: model_generation.ModelImageTextInput,
 ):
@@ -221,7 +241,7 @@ class TogetherAIModel(model_generation.MultimodalModel):
       logging.warning(
           "Together.AI Completion return content is None. Returning empty"
           " string. Request: %s",
-          request,
+          _sanitize_request_for_logging(request),
       )
       content = ""
 
@@ -246,7 +266,7 @@ class TogetherAIModel(model_generation.MultimodalModel):
     return model_generation.GenerateReturn(
         main_response=main_response,
         main_response_and_thoughts=main_response_and_thoughts,
-        request_for_logging=request,
+        request_for_logging=_sanitize_request_for_logging(request),
         response_for_logging=completion,
         generation_tokens=generation_tokens,
         prompt_tokens=prompt_tokens,
@@ -318,11 +338,14 @@ class XAIModel(model_generation.MultimodalModel):
         print(f"Reason: {e.response.reason}", flush=True)
         print(f"Headers: {e.response.headers}", flush=True)
         print(f"Response text: {e.response.text}", flush=True)
-        print(request)
+        print(_sanitize_request_for_logging(request))
         if e.response.status_code == 400:
           raise model_generation.DoNotRetryError(
               str(e),
-              info={"request": request, "response": e.response},
+              info={
+                  "request": _sanitize_request_for_logging(request),
+                  "response": e.response,
+              },
           ) from e
       raise
 
@@ -348,7 +371,7 @@ class XAIModel(model_generation.MultimodalModel):
       logging.warning(
           "xAI Completion return content is None. Returning empty string."
           " Request: %s",
-          request,
+          _sanitize_request_for_logging(request),
       )
       full_content = ""
 
@@ -381,7 +404,7 @@ class XAIModel(model_generation.MultimodalModel):
     return model_generation.GenerateReturn(
         main_response=full_content,
         main_response_and_thoughts=main_response_and_thoughts,
-        request_for_logging=request,
+        request_for_logging=_sanitize_request_for_logging(request),
         response_for_logging=completion,
         generation_tokens=total_generation_tokens,
         prompt_tokens=total_prompt_tokens,
@@ -547,7 +570,7 @@ class XAIModel(model_generation.MultimodalModel):
     return model_generation.GenerateReturn(
         main_response=full_content,
         main_response_and_thoughts=main_response_and_thoughts,
-        request_for_logging=request,
+        request_for_logging=_sanitize_request_for_logging(request),
         response_for_logging={"filtered_chunks_list": response_for_logging},
         generation_tokens=total_generation_tokens,
         prompt_tokens=total_prompt_tokens,
