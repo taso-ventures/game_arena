@@ -626,10 +626,10 @@ class PostRequestResult:
   json_response: Mapping[str, Any]
 
 
-def _sanitize_headers_for_request(
+def _copy_headers(
     headers: Mapping[str, str] | None,
 ) -> dict[str, str] | None:
-  """Create a copy of headers safe for use in requests without leaking secrets in logs."""
+  """Create a mutable copy of headers to avoid mutating the caller's mapping."""
   if headers is None:
     return None
   return dict(headers)
@@ -645,7 +645,7 @@ async def _post_request_async(
     timeout: datetime.timedelta,
 ) -> PostRequestResult:
   """Posts a request asynchronously and returns the result."""
-  safe_headers = _sanitize_headers_for_request(headers)
+  safe_headers = _copy_headers(headers)
   logging.info("Starting POST for '%s' to %s", name, url)
   try:
     async with session.post(
@@ -798,16 +798,21 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
       return response
     except requests.exceptions.HTTPError as e:
       if e.response is not None:
-        print(f"Error during {self._model_name}  request: ", flush=True)
-        print(f"Status code: {e.response.status_code}", flush=True)
-        print(f"Reason: {e.response.reason}", flush=True)
-        print(f"Headers: {e.response.headers}", flush=True)
-        print(f"Response text: {e.response.text}", flush=True)
-        print(request)
+        logging.warning(
+            "Error during %s request: status=%s reason=%s response=%s",
+            self._model_name,
+            e.response.status_code,
+            e.response.reason,
+            e.response.text,
+        )
+        logging.warning(_sanitize_request_for_logging(request))
         if e.response.status_code == 400:
           raise model_generation.DoNotRetryError(
               str(e),
-              info={"request": request, "response": e.response},
+              info={
+                  "request": _sanitize_request_for_logging(request),
+                  "response": e.response,
+              },
           ) from e
       raise
 
@@ -833,7 +838,7 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
       logging.warning(
           f"{self._model_name} Completion return content is None. Returning empty string."
           " Request: %s",
-          request,
+          _sanitize_request_for_logging(request),
       )
       full_content = ""
 
@@ -859,14 +864,14 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
             "reasoning_tokens"
         ]
     main_response_and_thoughts = (
-        full_content + ("\n\n" + full_reasoning_content)
+        (full_content + "\n\n" + full_reasoning_content)
         if full_reasoning_content
-        else ""
+        else full_content
     )
     return model_generation.GenerateReturn(
         main_response=full_content,
         main_response_and_thoughts=main_response_and_thoughts,
-        request_for_logging=request,
+        request_for_logging=_sanitize_request_for_logging(request),
         response_for_logging=completion,
         generation_tokens=total_generation_tokens,
         prompt_tokens=total_prompt_tokens,
@@ -1028,14 +1033,14 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
       response.close()
 
     main_response_and_thoughts = (
-        full_content + ("\n\n" + full_reasoning_content)
+        (full_content + "\n\n" + full_reasoning_content)
         if full_reasoning_content
-        else ""
+        else full_content
     )
     return model_generation.GenerateReturn(
         main_response=full_content,
         main_response_and_thoughts=main_response_and_thoughts,
-        request_for_logging=request,
+        request_for_logging=_sanitize_request_for_logging(request),
         response_for_logging={"filtered_chunks_list": response_for_logging},
         generation_tokens=total_generation_tokens,
         prompt_tokens=total_prompt_tokens,
