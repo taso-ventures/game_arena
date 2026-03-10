@@ -814,7 +814,7 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
   def _generate(
       self,
       messages: Sequence[Mapping[str, Any]],
-  ) -> tournament_util.GenerateReturn:
+  ) -> model_generation.GenerateReturn:
     request = {
         "model": self._model_name,
         "messages": messages,
@@ -863,7 +863,7 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
         if full_reasoning_content
         else ""
     )
-    return tournament_util.GenerateReturn(
+    return model_generation.GenerateReturn(
         main_response=full_content,
         main_response_and_thoughts=main_response_and_thoughts,
         request_for_logging=request,
@@ -922,7 +922,7 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
   def _generate_streaming(
       self,
       messages: Sequence[Mapping[str, Any]],
-  ) -> tournament_util.GenerateReturn:
+  ) -> model_generation.GenerateReturn:
     request = {
         "model": self._model_name,
         "messages": messages,
@@ -1032,7 +1032,7 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
         if full_reasoning_content
         else ""
     )
-    return tournament_util.GenerateReturn(
+    return model_generation.GenerateReturn(
         main_response=full_content,
         main_response_and_thoughts=main_response_and_thoughts,
         request_for_logging=request,
@@ -1043,8 +1043,8 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
     )
 
   def generate_with_text_input(
-      self, model_input: tournament_util.ModelTextInput
-  ) -> tournament_util.GenerateReturn:
+      self, model_input: model_generation.ModelTextInput
+  ) -> model_generation.GenerateReturn:
     messages = []
     if model_input.system_instruction is not None:
       messages.append(
@@ -1062,8 +1062,8 @@ class OpenAIGenericAPIModel(model_generation.MultimodalModel):
       return self._generate(messages)
 
   def generate_with_image_text_input(
-      self, model_input: tournament_util.ModelImageTextInput
-  ) -> tournament_util.GenerateReturn:
+      self, model_input: model_generation.ModelImageTextInput
+  ) -> model_generation.GenerateReturn:
     if not self._image_support:
       raise model_generation.UnsupportedCapabilityError(
           f"Model {self._model_name} does not support image input."
