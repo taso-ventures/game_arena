@@ -626,6 +626,15 @@ class PostRequestResult:
   json_response: Mapping[str, Any]
 
 
+def _sanitize_headers_for_request(
+    headers: Mapping[str, str] | None,
+) -> dict[str, str] | None:
+  """Create a copy of headers safe for use in requests without leaking secrets in logs."""
+  if headers is None:
+    return None
+  return dict(headers)
+
+
 async def _post_request_async(
     *,
     session: aiohttp.ClientSession,
@@ -636,25 +645,28 @@ async def _post_request_async(
     timeout: datetime.timedelta,
 ) -> PostRequestResult:
   """Posts a request asynchronously and returns the result."""
-  print(f"Starting POST for '{name}' to {url}")
+  safe_headers = _sanitize_headers_for_request(headers)
+  logging.info("Starting POST for '%s' to %s", name, url)
   try:
     async with session.post(
-        url, json=payload, headers=headers, timeout=timeout.total_seconds()
+        url, json=payload, headers=safe_headers,
+        timeout=timeout.total_seconds()
     ) as response:
-      print(f"Finished POST for '{name}' with status: {response.status}")
+      status = response.status
+      logging.info("Finished POST for '%s' with status: %s", name, status)
       # Raise an exception for bad status codes (4xx or 5xx)
       response.raise_for_status()
 
       json_response = await response.json()
       return PostRequestResult(
-          name=name, status=response.status, json_response=json_response
+          name=name, status=status, json_response=json_response
       )
 
   except asyncio.CancelledError:
-    print(f"POST for '{name}' was cancelled.")
+    logging.info("POST for '%s' was cancelled.", name)
     raise
   except Exception as e:
-    print(f"POST for '{name}' failed: {type(e).__name__}")
+    logging.warning("POST for '%s' failed: %s", name, type(e).__name__)
     # Re-raise the exception so the main loop knows it failed
     raise
 
